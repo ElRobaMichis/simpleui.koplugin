@@ -2369,7 +2369,7 @@ msgid ""
 "Authors, Series and Tags views."
 msgstr ""
 "Répertorie les livres sans auteur, sans série ni balise dans un "
-"groupedistinct dans les vues « Auteurs, Séries et Balises »."
+"groupe distinct dans les vues « Auteurs, Séries et Balises »."
 
 #: screens/sui_stats_launcher.lua:47
 msgid "Loading statistics…"
