@@ -318,6 +318,18 @@ local function liveHS()
     return package.loaded["screens/sui_homescreen"]
 end
 
+-- True when the file manager main menu is open above the stack entry at index
+-- `from`. The menu belongs to the screen beneath it, so that screen has to
+-- stay alive for as long as the menu is open.
+local function _mainMenuOpenAbove(stack, from, fm)
+    local container = fm and fm.menu and fm.menu.menu_container
+    if not container then return false end
+    for i = from + 1, #stack do
+        if stack[i].widget == container then return true end
+    end
+    return false
+end
+
 -- ---------------------------------------------------------------------------
 -- FileManager class patches
 -- Patches setupLayout, initGesListener, FileChooser.init, and FileChooser.changeToPath.
@@ -2357,6 +2369,7 @@ function M.patchUIManagerShow(plugin)
         -- Soft-parked HS under the system ScreenSaver is left alive when
         -- KEEP_PARKED_ACROSS_SUSPEND is set (see ScreenEngine), so the
         -- post-wakeup book-close path can still raise instead of cold-rebuild.
+        -- The screen is also left alive while the main menu is open above it.
         if _show_depth == 0 and widget and widget.covers_fullscreen
                 and (widget.title_bar or widget.name)
                 and widget.name ~= "homescreen"
@@ -2366,12 +2379,19 @@ function M.patchUIManagerShow(plugin)
             local keep_parked = SE and SE.SOFT_PARK_ENABLED
                 and SE.KEEP_PARKED_ACROSS_SUSPEND
             local stack = UI.getWindowStack()
-            for _, entry in ipairs(stack) do
+            for i, entry in ipairs(stack) do
                 local w = entry.widget
                 if w and w.name == "homescreen" then
                     if keep_parked and w._parked then
                         break
                     end
+                    -- A widget launched from the open main menu leaves the
+                    -- menu in place; closing it reveals the menu over this
+                    -- screen, and closing the menu reveals the screen.
+                    if _mainMenuOpenAbove(stack, i, plugin.ui) then
+                        break
+                    end
+                    widget._sui_displaced_screen    = w._id
                     w._navbar_closing_intentionally = true
                     w._navbar_closing_from_module   = true
                     UIManager:close(w)
@@ -2422,10 +2442,18 @@ function M.patchUIManagerClose(plugin)
 
     -- Show the homescreen after any fullscreen widget closes, if conditions allow.
     -- Defined once at patch-install time so it is not recreated on every close().
-    local function _doShowHS(fm, plugin_ref)
+    -- Shows screen `screen_id` (the built-in Homescreen when nil) again.
+    local function _doShowHS(fm, plugin_ref, screen_id)
         if isAppExiting() then return end
         local HS = liveHS()
-        if not HS or HS._instance then return end
+        if not HS then return end
+        local is_builtin = screen_id == nil or screen_id == "hs"
+        local SE = package.loaded["engines/sui_screen_engine"]
+        if is_builtin then
+            if HS._instance then return end
+        elseif not SE or SE.getInstance(screen_id) then
+            return
+        end
 
         -- Abort if another fullscreen widget appeared between the scheduleIn(0)
         -- call and this execution (e.g. coll_list opened by onReturn).
@@ -2435,7 +2463,11 @@ function M.patchUIManagerClose(plugin)
         for _, entry in ipairs(UI.getWindowStack()) do
             local w = entry.widget
             if w and w ~= current_fm then
-                if w.covers_fullscreen then return end
+                if w.covers_fullscreen then
+                    -- The screen comes back when that widget closes instead.
+                    w._sui_displaced_screen = w._sui_displaced_screen or screen_id or "hs"
+                    return
+                end
                 -- Non-fullscreen dialog still open (plugin achievement detail,
                 -- Frotz resume UI, ConfirmBox, …). The Tools/TouchMenu close
                 -- path schedules this callback after the dialog is already on
@@ -2454,8 +2486,11 @@ function M.patchUIManagerClose(plugin)
         -- Close leftover auto-dismissing toasts only.
         _closeOrphanedPopups(fm, nil)
 
-        local prev_action = plugin_ref.active_action
-        _showHSCold(plugin_ref, HS, prev_action)
+        if is_builtin then
+            _showHSCold(plugin_ref, HS, plugin_ref.active_action)
+        else
+            require("infra/sui_screen_nav").reopen(screen_id)
+        end
     end
 
     UIManager.close = function(um_self, widget, ...)
@@ -2613,7 +2648,7 @@ function M.patchUIManagerClose(plugin)
         -- closeReaderToHomescreen sets tearing_down=true, so the ReaderUI branch
         -- below is skipped for those paths. This block is a last-resort fallback
         -- for any path not covered above (e.g. a third-party plugin closing the reader).
-        if (widget.name == "ReaderUI" or isStartWithHS())
+        if (widget.name == "ReaderUI" or isStartWithHS() or widget._sui_displaced_screen)
                 and widget.covers_fullscreen
                 and (widget.title_bar or widget.name)
                 and widget.name ~= "homescreen"
@@ -2648,7 +2683,10 @@ function M.patchUIManagerClose(plugin)
             for _, entry in ipairs(UI.getWindowStack()) do
                 local w = entry.widget
                 if w and w ~= fm and w ~= widget and w.covers_fullscreen then
-                    other_open = true; break
+                    other_open = true
+                    -- The screen comes back when that widget closes instead.
+                    w._sui_displaced_screen = w._sui_displaced_screen or widget._sui_displaced_screen
+                    break
                 end
             end
             if not other_open then
@@ -2712,7 +2750,7 @@ function M.patchUIManagerClose(plugin)
                         if not fm2 then return end  -- FM gone = app is exiting
                         local RUI = package.loaded["apps/reader/readerui"]
                         if RUI and RUI.instance then return end
-                        _doShowHS(fm2, active_plugin)
+                        _doShowHS(fm2, active_plugin, widget._sui_displaced_screen)
                     end)
                 end
             end
