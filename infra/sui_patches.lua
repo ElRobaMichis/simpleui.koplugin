@@ -4575,6 +4575,14 @@ local function _wallpaperEnabledFM()
     return ok and SUIWallpaper and SUIWallpaper.styleGetWallpaperShowInFM and SUIWallpaper.styleGetWallpaperShowInFM()
 end
 
+-- True while native controls draw over a surface painted behind them: a bar
+-- tone or frame set on the pagination bar or title bar. Their own white
+-- backgrounds must then stay out of the way.
+local function _nativeControlSurface()
+    local ok, SUIWallpaper = pcall(require, "features/sui_wallpaper")
+    return ok and SUIWallpaper and SUIWallpaper.paintsBehindNativeControls() or false
+end
+
 -- Compatibility shim — internal callers replaced with _wallpaperBg().
 local function _getWallpaperBg()
     return _wallpaperBg()
@@ -4744,7 +4752,8 @@ function M.patchWallpaperFM(plugin)
     -- This makes chevrons, coll_back, and other icon Buttons paint a white
     -- rectangle behind them even with bordersize=0.
     -- Fix: wrap Button:paintTo to temporarily nil frame.background while
-    -- wallpaper-in-FM is active, then restore it after the paint call.
+    -- wallpaper-in-FM or a bar surface behind native controls is active, then
+    -- restore it after the paint call.
     -- We guard against double-patching by saving our own orig ref.
     -- -----------------------------------------------------------------------
     local ok_btn, Button = pcall(require, "ui/widget/button")
@@ -4753,10 +4762,11 @@ function M.patchWallpaperFM(plugin)
         installed[#installed + 1] = { Button, "paintTo", orig_btn_pt }
 
         Button.paintTo = function(btn_self, bb, x, y)
-            -- Only intercept when: wallpaper active, no explicit button colour,
-            -- and the frame FrameContainer exists and has a background.
-            if _wallpaperEnabledFM() and not btn_self.background
-                    and btn_self[1] and btn_self[1].background then
+            -- Only intercept when: a backdrop shows behind the button, no
+            -- explicit button colour, and the frame FrameContainer exists and
+            -- has a background.
+            if not btn_self.background and btn_self[1] and btn_self[1].background
+                    and (_wallpaperEnabledFM() or _nativeControlSurface()) then
                 local saved = btn_self[1].background
                 btn_self[1].background = nil
                 orig_btn_pt(btn_self, bb, x, y)
@@ -4810,12 +4820,13 @@ function M.patchWallpaperFM(plugin)
             -- Only intervenes when the icon does not yet have an explicit alpha
             -- defined by the instantiating widget. The FM wallpaper needs the
             -- alpha channel to show through; the night-mode colour option needs
-            -- it to composite the icon over the real background.
+            -- it to composite the icon over the real background, and so does a
+            -- bar surface behind native controls.
             if not iw_self.alpha then
                 if _wallpaperEnabledFM() then
                     iw_self.alpha = true
                     iw_self.original_in_nightmode = false
-                elseif SUIStyle.keepIconColorsInNight() then
+                elseif SUIStyle.keepIconColorsInNight() or _nativeControlSurface() then
                     iw_self.alpha = true
                 end
             end
@@ -4823,9 +4834,9 @@ function M.patchWallpaperFM(plugin)
     end
 
 
--- Reads the current pagination strength on every paint (like the title bar
--- button scrim), so a menu created before an opacity change still reflects
--- it, and a menu created at 0% still picks up a later increase.
+-- Reads the pagination surface (tone, opacity and frame) on every paint, so
+-- a menu created before a change still reflects it, and a menu created while
+-- the surface was not painted still picks up a later change.
 local function _applyPaginationScrim(menu_self)
     local page_info = menu_self and menu_self.page_info
     if not page_info or page_info._sui_pagination_scrim then return end
@@ -4833,17 +4844,15 @@ local function _applyPaginationScrim(menu_self)
     local orig_paint = page_info.paintTo
     function page_info:paintTo(bb, x, y)
         local ok, WP = pcall(require, "features/sui_wallpaper")
-        local strength = ok and WP and WP.getPaginationBackdropStrength and WP.getPaginationBackdropStrength() or 0
-        if strength > 0 then
+        local surface = ok and WP and WP.resolveBar("pagination")
+        if surface and (surface.strength > 0 or surface.border_sz > 0) then
             local h = (self.dimen and self.dimen.h) or 0
             if h <= 0 then
                 local sz = self.getSize and self:getSize()
                 h = sz and sz.h or 0
             end
-            -- Full-width scrim spanning the page bar's height.
-            if h > 0 then
-                Backdrop.paintBackdrop(bb, 0, y, Screen:getWidth(), h, strength)
-            end
+            -- Full-width surface spanning the page bar's height.
+            Backdrop.paintBar(bb, y, h, surface, "top")
         end
         return orig_paint(self, bb, x, y)
     end
@@ -4855,8 +4864,10 @@ end
     -- background = COLOR_WHITE. _injectWallpaperIntoWidget nils it once, but
     -- every setupLayout call re-creates the full widget tree via Menu:init.
     -- Wrap Menu.init so fullscreen FM-style menus always get nil backgrounds
-    -- when wallpaper is active.  We chain on top of whatever Menu.init is
-    -- current (may already be wrapped by patchMenuInitForPagination).
+    -- when wallpaper is active, and paint the pagination bar surface (tone,
+    -- opacity and frame) whether or not one is.  We chain on top of whatever
+    -- Menu.init is current (may already be wrapped by
+    -- patchMenuInitForPagination).
     -- -----------------------------------------------------------------------
     local ok_menu, Menu = pcall(require, "ui/widget/menu")
     if ok_menu and Menu then
@@ -4865,7 +4876,6 @@ end
 
         Menu.init = function(menu_self, ...)
             orig_menu_init(menu_self, ...)
-            if not _wallpaperEnabledFM() then return end
             -- Covers two cases:
             --   1. Fullscreen borderless overlays (Collections, History, etc.)
             --   2. FM FileChooser (name == "filemanager") — does not have
@@ -4886,14 +4896,16 @@ end
                                        and M._WALLPAPER_NAMES
                                        and M._WALLPAPER_NAMES[menu_self.name]
             if (is_fm_file_chooser or is_fullscreen_overlay) and menu_self[1] then
-                -- Clear the outer FrameContainer KOReader always builds white.
-                menu_self[1].background = nil
-                -- Also clear the inner OverlapGroup's first FrameContainer child.
-                local inner = menu_self[1][1]
-                if inner and inner[1] then
-                    inner[1].background = nil
+                if _wallpaperEnabledFM() then
+                    -- Clear the outer FrameContainer KOReader always builds white.
+                    menu_self[1].background = nil
+                    -- Also clear the inner OverlapGroup's first FrameContainer child.
+                    local inner = menu_self[1][1]
+                    if inner and inner[1] then
+                        inner[1].background = nil
+                    end
                 end
-                -- Optional scrim behind the native page/pagination bar.
+                -- Surface behind the native page/pagination bar.
                 pcall(_applyPaginationScrim, menu_self)
             end
         end
