@@ -52,7 +52,7 @@
 --       -- setting, or just the shadow when the stack is hidden.
 --   CoverWidgets.buildBacking(cover_w, cover_h, inset)
 --       -- The widget for that backing (nil when there is nothing to draw).
---   CoverWidgets.buildFolderNameWidget(item, available_w, font_size, fgcolor, bgcolor)
+--   CoverWidgets.buildFolderNameWidget(item, available_w, font_size, fgcolor, bgcolor, text_style)
 --   CoverWidgets.buildLabel(item, size, border, display)
 --       -- display: { label_mode, show_name, label_opacity, label_layout, label_pos, label_color, label_scale }
 --   CoverWidgets.buildBadge(mandatory, cover_dimen, cv_scale, cell_dimen, opts)
@@ -559,19 +559,24 @@ end
 -- and shadow tile the staircase without gaps. Body and outline fade with
 -- depth, so the pile recedes.
 
--- Fade factors by depth, where depth 1 is the layer touching the front cover.
--- A factor of 1 gives the full colour, 0 gives none. The outline table sets the
--- layer count.
-local _PILE_BODY_FADE   = { 1.0, 0.58 }
-local _PILE_BORDER_FADE = { 0.80, 0.44 }
+-- Body and outline share one fade ramp that drops by a fixed amount per layer,
+-- so every card is a constant step lighter than the one in front of it. Depth 1
+-- is the layer touching the front cover.
+local _PILE_LAYERS    = 2
+local _PILE_FADE_STEP = 0.45
+local _PILE_STEP      = Screen:scaleBySize(5)
 
-local _PILE_LAYERS = #_PILE_BORDER_FADE
-local _PILE_STEP   = Screen:scaleBySize(5)
-
--- Body blackness before fading. Night mode inverts the frame after painting,
--- so the night base is lower to keep the body dark on screen.
-local _PILE_BODY_BASE       = 0.5
+-- Blackness of the body and the outline at depth 1, before fading. Night mode
+-- inverts the frame after painting, so the night body base is lower to keep the
+-- body dark on screen.
+local _PILE_BODY_BASE       = 0.38
 local _PILE_BODY_BASE_NIGHT = 0.15
+local _PILE_BORDER_BASE     = 0.64
+
+-- Fade factor of a layer: 1 gives its full base colour, 0 gives none.
+local function pileFade(depth)
+    return 1 - (depth - 1) * _PILE_FADE_STEP
+end
 
 -- Interpolates two colours in painted space: t = 1 gives `a`, t = 0 gives `b`.
 local function blend8(a, b, t)
@@ -581,12 +586,13 @@ end
 
 local function pileBodyColor(depth)
     local base = Screen.night_mode and _PILE_BODY_BASE_NIGHT or _PILE_BODY_BASE
-    return Blitbuffer.gray(base * _PILE_BODY_FADE[depth])
+    return Blitbuffer.gray(base * pileFade(depth))
 end
 
 -- The cover's own outline colour, faded towards the page colour.
 local function pileBorderColor(depth)
-    return blend8(SUIStyle.COLOR.text_primary, SUIStyle.COLOR.surface, _PILE_BORDER_FADE[depth])
+    return blend8(SUIStyle.COLOR.text_primary, SUIStyle.COLOR.surface,
+        _PILE_BORDER_BASE * pileFade(depth))
 end
 
 -- Offset between consecutive cards. Always wider than the outline, so the
@@ -739,52 +745,55 @@ end
 
 -- ── Folder-name label overlay ─────────────────────────────────────────────────
 
--- Rendered line height per font size, memoised: measuring costs a full text
--- layout pass.
+-- Rendered line height per face and size, memoised: measuring costs a full
+-- text layout pass.
 local _line_h_memo = {}
 
 function CoverWidgets.clearLabelMetricsCache()
     _line_h_memo = {}
 end
 
-local function labelLineHeight(face, font_size)
-    local h = _line_h_memo[font_size]
+local function labelLineHeight(face, font_size, bold)
+    local key = string.format("%s|%d|%s", tostring(face.orig_font), font_size, tostring(bold))
+    local h = _line_h_memo[key]
     if not h then
         local probe = TextBoxWidget:new{
             text  = "Mg",
             face  = face,
             width = Screen:getWidth(),
-            bold  = true,
+            bold  = bold,
         }
         h = probe:getLineHeight()
         probe:free(true)
-        _line_h_memo[font_size] = h
+        _line_h_memo[key] = h
     end
     return h
 end
 
--- Folder name as centred bold text at a fixed `font_size`, capitalised per
--- word. Names longer than _LABEL_MAX_LINES lines are cut with an ellipsis.
+-- Folder name as centred text at a fixed `font_size`, capitalised per word.
+-- It is bold in the regular face unless `text_style` (a { family, variant }
+-- text style, see Config.getTextStyle) gives the face. Names longer than _LABEL_MAX_LINES lines are cut with an ellipsis.
 -- Without a `bgcolor` the text is drawn over whatever is already painted;
 -- with one it sits on that opaque background.
 -- `item` needs only `.text` and a writable `._fc_display_text` cache slot
 -- (any table works — sui_foldercovers.lua passes the MosaicMenuItem instance
 -- so the capitalised/bidi-wrapped text is computed once per item, not once
 -- per render).
-function CoverWidgets.buildFolderNameWidget(item, available_w, font_size, fgcolor, bgcolor)
+function CoverWidgets.buildFolderNameWidget(item, available_w, font_size, fgcolor, bgcolor, text_style)
     if not item._fc_display_text then
         local text = item.text
         if text:match("/$") then text = text:sub(1, -2) end
         text = text:gsub("(%S+)", function(w) return w:sub(1,1):upper() .. w:sub(2) end)
         item._fc_display_text = BD.directory(text)
     end
-    local face   = Font:getFace(SUIStyle.FACE_REGULAR, font_size)
+    local face, bold = Font:getFace(SUIStyle.FACE_REGULAR, font_size), true
+    if text_style then face, bold = SUIStyle.getTextFace(text_style, font_size) end
     local opts   = {
         text      = item._fc_display_text,
         face      = face,
         width     = available_w,
         alignment = "center",
-        bold      = true,
+        bold      = bold,
         fgcolor   = fgcolor or SUIStyle.COLOR.text_primary,
         bgcolor   = bgcolor,
     }
@@ -792,7 +801,7 @@ function CoverWidgets.buildFolderNameWidget(item, available_w, font_size, fgcolo
         if bgcolor then return TextBoxWidget:new(opts) end
         return UI.makeAlphaTextBox(opts)
     end
-    local max_h = _LABEL_MAX_LINES * labelLineHeight(face, font_size)
+    local max_h = _LABEL_MAX_LINES * labelLineHeight(face, font_size, bold)
     local name  = build()
     if name:getSize().h <= max_h then return name end
 
@@ -809,13 +818,15 @@ end
 -- _LABEL_LAYOUTS). At the bottom it is lifted off the edge so it reads as a
 -- strap around the book.
 -- `display` is the pre-read settings table:
---   { label_mode, show_name, label_opacity, label_layout, label_pos, label_color, label_scale }
+--   { label_mode, show_name, label_opacity, label_layout, label_pos, label_color, label_scale,
+--     label_style? }   label_style: text style of the name (see buildFolderNameWidget)
 function CoverWidgets.buildLabel(item, size, border, display)
     if display.label_mode ~= "overlay" then return nil end
     if not display.show_name            then return nil end
     local layout   = _LABEL_LAYOUTS[display.label_layout] or _LABEL_LAYOUTS[_DEFAULT_LABEL_LAYOUT]
     local dark     = display.label_color == "dark"
-    local bg_color = dark and SUIStyle.COLOR.text_primary or SUIStyle.COLOR.surface
+    local bg_color = dark and SUIStyle.COLOR.text_primary
+        or Backdrop.toneColor(display.label_color == "gray" and Backdrop.TONE.GRAY or Backdrop.TONE.WHITE)
     local fg_color = dark and SUIStyle.COLOR.surface or SUIStyle.COLOR.text_primary
 
     local cover_w  = size.w + border * 2
@@ -829,7 +840,7 @@ function CoverWidgets.buildLabel(item, size, border, display)
     -- opaque background lets the text paint its own.
     local font_size = math.max(8, math.floor(_BASE_DIR_FS * (display.label_scale or 1.0)))
     local name      = CoverWidgets.buildFolderNameWidget(item, inner_w - _LATERAL_PAD * 2,
-        font_size, fg_color, strength >= 100 and bg_color or nil)
+        font_size, fg_color, strength >= 100 and bg_color or nil, display.label_style)
 
     local band_h  = math.max(name:getSize().h + (_VERTICAL_PAD + border) * 2,
                              math.floor(cover_h * _LABEL_MIN_H_FRAC))

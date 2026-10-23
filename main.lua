@@ -8,7 +8,7 @@ local Dispatcher      = require("dispatcher")
 
 -- Each simpleui module captures its own local translation proxy from sui_i18n.
 -- The native package.loaded["gettext"] is never wrapped or replaced, which
--- prevents state-mutation conflicts with other plugins (e.g. zlibrary).
+-- prevents state-mutation conflicts with other plugins.
 local I18n = require("infra/sui_i18n")
 local _    = I18n.translate
 
@@ -18,7 +18,14 @@ local Bottombar    = require("screens/sui_bottombar")
 local Topbar       = require("screens/sui_topbar")
 local QSBar        = require("screens/sui_quicksettings_bar")
 local Patches      = require("infra/sui_patches")
+local WindowHooks  = require("infra/sui_window_hooks")
+local Memory       = require("infra/sui_memory")
+local Text         = require("infra/sui_text")
 local SUISettings  = require("infra/sui_store")
+
+-- Installer of the main menu entries, loaded on first access by addToMainMenu
+-- and dropped on teardown so a hot update loads the new one.
+local _menu_installer
 
 -- ---------------------------------------------------------------------------
 -- ReaderStatistics class-table accessor
@@ -73,8 +80,6 @@ local SimpleUIPlugin = WidgetContainer:new{
     _topbar_timer             = nil,
     _power_dialog             = nil,
 
-    _orig_uimanager_show      = nil,
-    _orig_uimanager_close     = nil,
     _orig_booklist_new        = nil,
     _orig_menu_new            = nil,
     _orig_fmcoll_show         = nil,
@@ -1137,23 +1142,21 @@ function SimpleUIPlugin:init()
                     if not is_file then return nil end
                     if not BM.isEnabled() then return nil end
 
-                    local authors_raw = book_props and book_props.authors
-                    if not authors_raw or authors_raw == "" then return nil end
-                    -- Multi-author: newline-delimited.  Navigate to the first
-                    -- author only; a picker would be over-engineering for v1.
-                    local author = authors_raw:match("^([^\n]+)") or authors_raw
-                    author = author:match("^%s*(.-)%s*$") -- trim whitespace
+                    -- Multi-author: navigates to the first author only.
+                    local author = Text.firstLine(book_props and book_props.authors)
+                    if not author then return nil end
 
                     local fc2 = FM2.instance and FM2.instance.file_chooser
                     local count = BM.getAuthorBookCount(fc2, author)
                     if count < 2 then return nil end
 
                     return {{
-                        text = string.format(_("More by %s (%d)"), author, count),
+                        text     = string.format(_("More by %s (%d)"), author, count),
+                        sui_icon = "author",
                         callback = function()
                             if close_cb then close_cb() end
                             local fm2 = FM2.instance
-                            if fm2 then BM.navigateToAuthorLeaf(fm2, author, file) end
+                            if fm2 then BM.navigateToLeaf(fm2, "author", author, { origin_file = file }) end
                         end,
                     }}
                 end
@@ -1200,7 +1203,8 @@ function SimpleUIPlugin:init()
                         or (ok_bl and BL and BL.hasBookBeenOpened(file))
                     if not is_book then return nil end
                     return {{
-                        text = _("Book statistics"),
+                        text     = _("Book statistics"),
+                        sui_icon = "chart",
                         callback = function()
                             if close_cb then close_cb() end
                             require("screens/sui_stats_launcher").open("book", { filepath = file })
@@ -1450,6 +1454,25 @@ function SimpleUIPlugin:onCloseWidget()
     end
 end
 
+-- Removes the file-dialog button `id` from the file manager and from the
+-- file searcher's shared button table, keeping that table's index consistent.
+local function _removeFileDialogButton(id, FM, FS)
+    if FM and FM.instance and FM.instance.removeFileDialogButtons then
+        pcall(function() FM.instance:removeFileDialogButtons(id) end)
+    end
+    local buttons = FS and FS.file_dialog_added_buttons
+    local idx = buttons and buttons.index and buttons.index[id]
+    if not idx then return end
+    pcall(function()
+        table.remove(buttons, idx)
+        buttons.index[id] = nil
+        for other, i in pairs(buttons.index) do
+            if i > idx then buttons.index[other] = i - 1 end
+        end
+        if #buttons == 0 then FS.file_dialog_added_buttons = nil end
+    end)
+end
+
 function SimpleUIPlugin:onTeardown()
     -- Flush the plugin settings store so any in-memory writes are persisted
     -- before the plugin is unloaded or KOReader exits.
@@ -1461,105 +1484,23 @@ function SimpleUIPlugin:onTeardown()
     Patches.teardownAll(self)
     pcall(function() QSBar.uninstall() end)
     I18n.uninstall()
-    -- Give modules with internal upvalue caches a chance to nil them before
-    -- their package.loaded entry is cleared — ensures the GC can collect the
-    -- old tables immediately rather than waiting for the upvalue to be rebound.
-    local mod_recent = package.loaded["modules/module_recent"]
-    if mod_recent and type(mod_recent.reset) == "function" then pcall(mod_recent.reset) end
-    local mod_new_books = package.loaded["modules/module_new_books"]
-    if mod_new_books and type(mod_new_books.reset) == "function" then pcall(mod_new_books.reset) end
-    local mod_tbr = package.loaded["modules/module_tbr"]
-    if mod_tbr and type(mod_tbr.reset) == "function" then
-        pcall(mod_tbr.reset)
-    end
-    -- Remove the TBR button from the Library browser dialog and search results.
+    -- Give modules with internal caches and scheduled work a chance to
+    -- release them before their package.loaded entry is cleared, so the GC
+    -- can collect the old tables right away.
+    Memory.reset()
     local FM = package.loaded["apps/filemanager/filemanager"]
-    if FM and FM.instance and FM.instance.removeFileDialogButtons then
-        pcall(function() FM.instance:removeFileDialogButtons("sui_tbr") end)
-    end
-    -- Remove the TBR button from the FileSearcher table and restore the original onMenuHold.
     local FS = package.loaded["apps/filemanager/filemanagerfilesearcher"]
-    if FS then
-        -- Restore the original onMenuHold if it was replaced.
-        if FS._sui_onMenuHold_patched and FS._sui_orig_onMenuHold then
+    -- Restore the FileSearcher's original onMenuHold if it was replaced. When
+    -- the original was captured in the patch's closure, only the flag is cleared.
+    if FS and FS._sui_onMenuHold_patched then
+        if FS._sui_orig_onMenuHold then
             FS.onMenuHold = FS._sui_orig_onMenuHold
             FS._sui_orig_onMenuHold = nil
-            FS._sui_onMenuHold_patched = nil
-        elseif FS._sui_onMenuHold_patched then
-            -- Patch was installed but orig was not saved separately
-            -- (captured in the closure); just clear the flag and TBR entry.
-            FS._sui_onMenuHold_patched = nil
         end
-        if FS.file_dialog_added_buttons then
-            local idx = FS.file_dialog_added_buttons.index
-                and FS.file_dialog_added_buttons.index["sui_tbr"]
-            if idx then
-                pcall(function()
-                    table.remove(FS.file_dialog_added_buttons, idx)
-                    FS.file_dialog_added_buttons.index["sui_tbr"] = nil
-                    for id, i in pairs(FS.file_dialog_added_buttons.index) do
-                        if i > idx then
-                            FS.file_dialog_added_buttons.index[id] = i - 1
-                        end
-                    end
-                    if #FS.file_dialog_added_buttons == 0 then
-                        FS.file_dialog_added_buttons = nil
-                    end
-                end)
-            end
-        end
+        FS._sui_onMenuHold_patched = nil
     end
-    -- Remove the "More by <Author>" button from the Library browser and FileSearcher.
-    if FM and FM.instance and FM.instance.removeFileDialogButtons then
-        pcall(function() FM.instance:removeFileDialogButtons("sui_browse_author") end)
-    end
-    if FS and FS.file_dialog_added_buttons then
-        local idx2 = FS.file_dialog_added_buttons.index
-            and FS.file_dialog_added_buttons.index["sui_browse_author"]
-        if idx2 then
-            pcall(function()
-                table.remove(FS.file_dialog_added_buttons, idx2)
-                FS.file_dialog_added_buttons.index["sui_browse_author"] = nil
-                for id, i in pairs(FS.file_dialog_added_buttons.index) do
-                    if i > idx2 then
-                        FS.file_dialog_added_buttons.index[id] = i - 1
-                    end
-                end
-                if #FS.file_dialog_added_buttons == 0 then
-                    FS.file_dialog_added_buttons = nil
-                end
-            end)
-        end
-    end
-    local mod_rg = package.loaded["modules/module_reading_goals"]
-    if mod_rg and type(mod_rg.reset) == "function" then
-        pcall(mod_rg.reset)
-    end
-    -- Remove the "Book statistics" button from the Library browser and FileSearcher.
-    if FM and FM.instance and FM.instance.removeFileDialogButtons then
-        pcall(function() FM.instance:removeFileDialogButtons("sui_book_stats") end)
-    end
-    if FS and FS.file_dialog_added_buttons then
-        local idx = FS.file_dialog_added_buttons.index
-            and FS.file_dialog_added_buttons.index["sui_book_stats"]
-        if idx then
-            pcall(function()
-                table.remove(FS.file_dialog_added_buttons, idx)
-                FS.file_dialog_added_buttons.index["sui_book_stats"] = nil
-                for id, i in pairs(FS.file_dialog_added_buttons.index) do
-                    if i > idx then
-                        FS.file_dialog_added_buttons.index[id] = i - 1
-                    end
-                end
-                if #FS.file_dialog_added_buttons == 0 then
-                    FS.file_dialog_added_buttons = nil
-                end
-            end)
-        end
-    end
-    local mod_bm = package.loaded["features/library/sui_library_browse"]
-    if mod_bm and type(mod_bm.reset) == "function" then
-        pcall(mod_bm.reset)
+    for _, button_id in ipairs({ "sui_tbr", "sui_browse_author", "sui_book_stats" }) do
+        _removeFileDialogButton(button_id, FM, FS)
     end
     -- Evict all plugin modules from the Lua module cache so that a hot update
     -- (files replaced on disk without restarting KOReader) picks up new code
@@ -1580,6 +1521,9 @@ function SimpleUIPlugin:onTeardown()
         Cfg.endStatsSyncGuard()
     end
     require("infra/sui_paths").unloadModules()
+    -- Reclaim the unloaded plugin's heap and native buffers before the reader
+    -- starts allocating.
+    collectgarbage("collect")
 end
 
 -- ---------------------------------------------------------------------------
@@ -1818,7 +1762,7 @@ function SimpleUIPlugin:onCloseDocument()
     if not is_reload then
         local Patches = package.loaded["infra/sui_patches"]
         if Patches and Patches.CoverTransition and Patches.CoverTransition.isCloseEnabled() then
-            local orig_show = UIManager._simpleui_show_orig or UIManager.show
+            local orig_show = WindowHooks.origShow()
             local live_doc  = self.ui and self.ui.document
             local ok_ct, shown = pcall(Patches.CoverTransition.show, closed_fp, orig_show, live_doc)
             cover_shown = ok_ct and shown
@@ -2349,8 +2293,6 @@ function SimpleUIPlugin:_updateFMHomeIcon() end
 -- ---------------------------------------------------------------------------
 -- Main menu entry (sui_menu is lazy-loaded on first access)
 -- ---------------------------------------------------------------------------
-
-local _menu_installer = nil
 
 function SimpleUIPlugin:addToMainMenu(menu_items)
     local _ = require("infra/sui_i18n").translate

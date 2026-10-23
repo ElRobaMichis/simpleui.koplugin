@@ -12,6 +12,7 @@ local _ = require("infra/sui_i18n").translate
 local Config = require("infra/sui_config")
 local SUISettings = require("infra/sui_store")
 local Backdrop = require("infra/sui_backdrop")
+local SUIWallpaper = require("features/sui_wallpaper")
 
 -- Lazy reference to the style module — avoids a circular-require at load time.
 local _SUIStyle
@@ -363,18 +364,17 @@ local function _reloadImage(img)
     pcall(img.init, img)
 end
 
--- Wallpaper backdrop painted behind a title bar across the full page width.
--- Strength is read at paint time so opacity changes need no re-hook. The
--- instance-level paintTo is dropped again to return to the class method.
+-- Bar surface (tone, opacity and frame) painted behind a title bar across
+-- the full page width. It is read at paint time so changes need no re-hook.
+-- The instance-level paintTo is dropped again to return to the class method.
 local function _installBarScrim(tb)
     if rawget(tb, "paintTo") then return end
     local orig = tb.paintTo
     function tb:paintTo(bb, x, y)
-        local ok, WP = pcall(require, "features/sui_wallpaper")
-        local strength = ok and WP.getTitlebarBackdropStrength() or 0
-        if strength > 0 then
+        local surface = SUIWallpaper.resolveBar("titlebar")
+        if surface.strength > 0 or surface.border_sz > 0 then
             local h = (self.dimen and self.dimen.h) or self:getHeight()
-            if h > 0 then Backdrop.paintBackdrop(bb, 0, y, Screen:getWidth(), h, strength) end
+            Backdrop.paintBar(bb, y, h, surface, "bottom")
         end
         return orig(self, bb, x, y)
     end
@@ -521,13 +521,20 @@ end
 -- icons alike, which then render at the same visual size.
 local TABS_SEARCH_ICON_SCALE = 1.37
 
+-- Face of the tab labels, scaled by the title-bar size. `base_size` is a
+-- SUIStyle font size (default FS_BODY). Also used by other tab bars so they
+-- scale with the title-bar tabs.
+function M.getTabsFace(base_size)
+    local S = SUIStyle()
+    return require("ui/font"):getFace(S.FACE_REGULAR, math.floor((base_size or S.FS_BODY) * M.getSizeScale()))
+end
+
 -- Metrics of the compact tabs-style bar, scaled by the title-bar size. The
 -- icon size equals the text height and is also the menu icon size of the
 -- classic style.
 local function _tabsMetrics()
-    local S     = SUIStyle()
     local scale = M.getSizeScale()
-    local face  = require("ui/font"):getFace(S.FACE_REGULAR, math.floor(S.FS_BODY * scale))
+    local face  = M.getTabsFace()
     local probe = require("ui/widget/textwidget"):new{ text = "A", face = face, padding = 0 }
     local text_h = probe:getSize().h
     probe:free()
@@ -823,18 +830,24 @@ local function _installBackController(fm_self, back_icon, shown_x, on_state)
     fc.onFolderUp = function(fc_self, ...)
         local BM = _BrowseMeta()
         if BM then
-            -- Arrived from the book dialog ("More by X"): one back press from
-            -- that author's list returns to the real folder, scrolled to the
-            -- book, not to the Authors root.
-            local origin = fc_self._sui_author_dialog_origin
-            if origin and origin.path then
+            -- Arrived at a leaf from elsewhere (the book dialog, or a screen):
+            -- one back press from that leaf returns to where it started, not
+            -- to the root of the dimension.
+            local origin = fc_self._sui_leaf_origin
+            if origin then
                 local ok_pl, level = pcall(BM.getPathLevel, fc_self.path or "")
                 if ok_pl and level == "file_list" and BM.getPathDepth(fc_self.path) == 1 then
-                    fc_self._sui_author_dialog_origin = nil
-                    BM.exitToNormal(fc_self, fm_self)
-                    fc_self:changeToPath(origin.path, origin.file)
-                    refreshState(fc_self, 1)
-                    return true
+                    fc_self._sui_leaf_origin = nil
+                    if fc_self.path == origin.leaf then
+                        BM.exitToNormal(fc_self, fm_self)
+                        if origin.return_fn then
+                            origin.return_fn()
+                        else
+                            fc_self:changeToPath(origin.path, origin.file)
+                        end
+                        refreshState(fc_self, 1)
+                        return true
+                    end
                 end
             end
             -- At the dim_list level of a virtual tree, exit to the filesystem.
@@ -1014,15 +1027,11 @@ local function _applyClassic(fm_self, tb)
                         -- Improvement #4: use cached _BrowseMeta().
                         local BM = _BrowseMeta()
                         if not BM then return end
-                        local ButtonDialog = require("ui/widget/buttondialog")
+                        local ActionSheet  = require("engines/sui_action_sheet")
                         local fc_ref       = fm_self.file_chooser
                         local cur_mode     = fc_ref and BM.getCurrentMode(fc_ref) or "normal"
-                        local function _check(mode)
-                            return cur_mode == mode and "\u{2713} " or "  "
-                        end
-                        -- Closes dialog, navigates to mode, and refreshes the icon.
-                        local function _navigate(dlg, mode)
-                            UIManager:close(dlg)
+                        -- Navigates to mode, and refreshes the icon.
+                        local function _navigate(mode)
                             BM.navigateTo(fm_self, mode)
                             local _ss = SUIStyle()
                             if not (_ss and _ss.applyIconToBtn(_BM_SLOT[mode], browse_btn)) then
@@ -1038,19 +1047,23 @@ local function _applyClassic(fm_self, tb)
                             end
                             UIManager:setDirty(tb.show_parent or fm_self, "ui", tb.dimen)
                         end
-                        local dlg
-                        dlg = ButtonDialog:new{
-                            title       = _("Browse library"),
-                            title_align = "center",
-                            buttons = {
-                                {{ text = _check("normal") .. _("Default"),   callback = function() _navigate(dlg, "normal") end }},
-                                {{ text = _check("author") .. _("By author"), callback = function() _navigate(dlg, "author") end }},
-                                {{ text = _check("series") .. _("By series"), callback = function() _navigate(dlg, "series") end }},
-                                {{ text = _check("tags")   .. _("By tags"),   callback = function() _navigate(dlg, "tags")   end }},
-                                {{ text = _("Cancel"),                         callback = function() UIManager:close(dlg)     end }},
-                            },
+                        local function _mode(mode, icon, label)
+                            return { text = label, sui_icon = icon, checked = cur_mode == mode,
+                                     callback = function() _navigate(mode) end }
+                        end
+                        ActionSheet.show{
+                            name       = "sui_win_browse_mode",
+                            title      = _("Browse library"),
+                            icon       = "library",
+                            fit_width  = true,
+                            auto_close = true,
+                            sections   = { ActionSheet.list{
+                                _mode("normal", "folder", _("Default")),
+                                _mode("author", "author", _("By author")),
+                                _mode("series", "series", _("By series")),
+                                _mode("tags",   "tags",   _("By tags")),
+                            } },
                         }
-                        UIManager:show(dlg)
                     end,
                 }
 

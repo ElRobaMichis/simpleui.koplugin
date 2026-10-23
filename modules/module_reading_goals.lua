@@ -2,6 +2,7 @@
 -- Layouts: Default (bar + detail), Compact (single inline row), Rings (circular progress).
 
 local CenterContainer = require("ui/widget/container/centercontainer")
+local Memory          = require("infra/sui_memory")
 local Device          = require("device")
 local Font            = require("ui/font")
 local FrameContainer  = require("ui/widget/container/framecontainer")
@@ -15,7 +16,6 @@ local LineWidget      = require("ui/widget/linewidget")
 local OverlapGroup    = require("ui/widget/overlapgroup")
 local RightContainer  = require("ui/widget/container/rightcontainer")
 local TextWidget      = require("ui/widget/textwidget")
-local TextBoxWidget   = require("ui/widget/textboxwidget")
 local UIManager       = require("ui/uimanager")
 local VerticalGroup   = require("ui/widget/verticalgroup")
 local VerticalSpan    = require("ui/widget/verticalspan")
@@ -48,7 +48,7 @@ local _BASE_ROW_H   = Screen:scaleBySize(16)
 local _BASE_SUB_H   = Screen:scaleBySize(16)
 local _BASE_SUB_GAP = Screen:scaleBySize(2)
 local _BASE_ROW_GAP = Screen:scaleBySize(18)
-local _BASE_BAR_H   = Screen:scaleBySize(8)
+local _BASE_BAR_H   = SUIStyle.PROGRESS_BAR_H
 local _BASE_LBL_W   = Screen:scaleBySize(44)
 local _BASE_COL_GAP = Screen:scaleBySize(8)
 local _BASE_BOT_PAD = Screen:scaleBySize(18)
@@ -1025,14 +1025,12 @@ function M.build(w, ctx)
     
     if not ok then
         logger.warn("simpleui reading_goals build error: " .. tostring(res))
-        -- Wrapping TextBoxWidget rather than the single-line TextWidget behind
-        -- makeColoredText, so this message wraps within the module's width
-        -- instead of overflowing past it (same pattern as the book modules'
-        -- empty-state placeholders).
+        -- Wrapping text box rather than the single-line TextWidget behind
+        -- makeColoredText, so the message wraps within the module's width.
         local err_h = require("device").screen:scaleBySize(60)
         local err_args = {
             text      = _("Error in Reading Goals: check crash.log"),
-            face      = Font:getFace(SUIStyle.FACE_REGULAR, 15),
+            face      = Font:getFace(SUIStyle.FACE_REGULAR, SUIStyle.FS_DETAIL),
             width     = w - PAD * 2,
             height    = err_h,
             height_adjust = true,
@@ -1041,22 +1039,9 @@ function M.build(w, ctx)
             fgcolor   = SUIStyle.COLOR.text_primary,
         }
 
-        local err_w
-        if ctx.has_wallpaper then
-            local ok_tbx, tbx = pcall(UI.makeAlphaTextBox, err_args)
-            if ok_tbx then
-                err_w = tbx
-            else
-                logger.warn("simpleui: module_reading_goals: makeAlphaTextBox failed, falling back to TextBoxWidget: " .. tostring(tbx))
-                err_w = TextBoxWidget:new(err_args)
-            end
-        else
-            err_w = TextBoxWidget:new(err_args)
-        end
-
         return CenterContainer:new{
             dimen = Geom:new{ w = w, h = err_h },
-            err_w,
+            UI.makeTextBox(err_args, ctx.text_alpha),
         }
     end
     return res
@@ -1361,5 +1346,7 @@ function M.getMenuItems(ctx_menu)
         behaviour = #behaviour_rows > 0 and behaviour_rows or nil,
     }, ctx_menu)
 end
+
+Memory.onReset(M.reset)
 
 return M

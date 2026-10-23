@@ -14,12 +14,12 @@
 --
 -- Icon override mechanics
 -- ───────────────────────
--- Tab-bar icons: FileManagerMenu.onShowMenu and ReaderMenu.onShowMenu are
--- patched so every (re)open replaces tab icons with the user's choices
--- before TouchMenu is built. Matching uses `tab.id` (stamped by KOReader's
+-- Tab-bar icons: a step registered in the shared menu hooks
+-- (infra/sui_menu_hooks.lua) replaces tab icons with the user's choices every
+-- time a FileManagerMenu or ReaderMenu table is built or opened, before
+-- TouchMenu is created. Matching uses `tab.id` (stamped by KOReader's
 -- MenuSorter onto every tab entry) — NOT `tab.key`, which native tabs never
--- have. Patches are installed by installTabIconPatch()/
--- installReaderTabIconPatch() and removed on teardown.
+-- have. The step is registered by installTabIconPatch().
 --
 -- Titlebar / search / back icons: sui_titlebar.lua calls
 -- SUIStyle.getIcon(slot_id) when assigning image.file to each button, and
@@ -35,8 +35,7 @@
 --   SUIStyle.resetAll() / .performResetAllSystemIcons(plugin) — clear overrides
 --   SUIStyle.applyTabIcons(fm_or_ui_or_table)  — push overrides into a live
 --                                                 FM/Reader tab_item_table
---   SUIStyle.install/removeTabIconPatch()        — persistent FM-menu patch
---   SUIStyle.install/removeReaderTabIconPatch()  — persistent Reader-menu patch
+--   SUIStyle.installTabIconPatch()         — persistent FM/Reader menu step
 --   SUIStyle.refreshLiveTabBars()          — reapply + repaint any open
 --                                             FM/Reader tab bar right now
 --   SUIStyle.makeMenuItems(plugin)         — sub_item_table for the settings menu
@@ -53,11 +52,14 @@
 --               .applyPack(path)
 
 local SUISettings     = require("infra/sui_store")
+local MenuHooks       = require("infra/sui_menu_hooks")
 local logger          = require("logger")
+local Text            = require("infra/sui_text")
 local _               = require("infra/sui_i18n").translate
 local Blitbuffer      = require("ffi/blitbuffer")
 local Device          = require("device")
 local RenderText       = require("ui/rendertext")
+local ffiutil          = require("ffi/util")
 local Screen          = Device.screen
 
 -- ---------------------------------------------------------------------------
@@ -170,6 +172,16 @@ M.SLOTS = {
         label     = function() return _("Collections: Back Button") end,
         group     = "sui_coll_icons",
         default_ko = "appbar.back",
+    },
+    -- ── Quick Settings panel ─────────────────────────────────────────────
+    -- Icon of the Exit Book button of the reader's Book layout. Read each
+    -- time the panel is built through M.resolveIcon().
+    {
+        id        = "sui_qs_exit",
+        label     = function() return _("Exit Book Button") end,
+        group     = "sui_qs_icons",
+        default_ko = "exit",
+        default_icon = "nerd:F08B",
     },
     -- ── Quick Actions Defaults ───────────────────────────────────────────
     {
@@ -315,9 +327,9 @@ end
 
 local _ICON_NIGHT_COLORS_KEY = "simpleui_style_icons_night_colors"
 
-function M.keepIconColorsInNight()
+M.keepIconColorsInNight = SUISettings.memoize(function()
     return SUISettings:isTrue(_ICON_NIGHT_COLORS_KEY)
-end
+end)
 
 function M.setKeepIconColorsInNight(on)
     SUISettings:set(_ICON_NIGHT_COLORS_KEY, on and true or false)
@@ -435,6 +447,15 @@ function M.safeIconPath(path, fallback, slot_id)
     end
 
     return path
+end
+
+--- Renderable icon reference for `id`: the stored override when it is valid,
+--- else the slot's `default_icon`. nil when the slot has no `default_icon`
+--- and no valid override. An invalid override is dropped from the settings.
+function M.resolveIcon(id)
+    local slot = _SLOT_BY_ID[id]
+    local default_icon = slot and slot.default_icon
+    return M.safeIconPath(M.getIcon(id), default_icon, id)
 end
 
 --- Clears every system icon override.
@@ -758,14 +779,9 @@ end
 -- Assigning a full custom path straight into `tab.icon` therefore always
 -- resolves to icon-not-found.
 --
--- The same trick sui_quicksettings_bar.lua already uses to make
--- "simpleui_settings" resolve applies here too: REGISTER the custom icon under
--- a stable bare name:
---   1. Copy the file to DataStorage/icons/<name>.<ext> (disk-based lookup;
---      ICONS_DIRS always searches the user icons dir first, so this alone
---      is enough, and survives restarts).
---   2. Also poke IconWidget's runtime ICONS_PATH cache so the change is
---      visible immediately, without waiting for a fresh process.
+-- The icon is therefore REGISTERED under a stable bare name through
+-- infra/sui_icon_registry.lua, which copies the file to the user icons
+-- directory and updates IconWidget's lookup so the change applies at once.
 -- Only .svg/.png are supported here because those are the only two
 -- extensions IconWidget's by-name search ever tries.
 local _TAB_ICON_NAME_CACHE = {} -- slot_id -> { src = last-registered source path, name = registered name }
@@ -800,41 +816,12 @@ function M.registerTabIconName(slot_id, path)
         return name -- already registered for this exact source
     end
 
-    local ok_ds, DataStorage = pcall(require, "datastorage")
-    local ok_lfs, lfs        = pcall(require, "libs/libkoreader-lfs")
-    local ok_fu, ffiutil     = pcall(require, "ffi/util")
-    if not (ok_ds and ok_lfs and ok_fu) then return nil end
-
-    local user_dir = DataStorage:getDataDir() .. "/icons"
-    if lfs.attributes(user_dir, "mode") ~= "directory" then
-        pcall(lfs.mkdir, user_dir)
-    end
-    local dst = user_dir .. "/" .. name .. "." .. ext
-
-    -- Always (re)copy — the user may have picked a different source file
-    -- for the same slot since the last time this ran.
-    local copy_ok = pcall(ffiutil.copyFile, path, dst)
-    if not copy_ok or lfs.attributes(dst, "mode") ~= "file" then
+    -- Always (re)copy: the user may have picked a different source file for
+    -- the same slot since the last time this ran.
+    if not require("infra/sui_icon_registry").register(name, path) then
         logger.warn("simpleui/style: failed to register tab icon for " .. slot_id)
         return nil
     end
-
-    -- Keep IconWidget's runtime name-cache in sync so the change applies
-    -- immediately, without a restart (same approach as
-    -- sui_quicksettings_bar.lua's icon-registration Layer 2).
-    pcall(function()
-        local iw = require("ui/widget/iconwidget")
-        local iw_init = iw._simpleui_orig_init_for_scan or rawget(iw, "init")
-        if type(iw_init) ~= "function" then return end
-        for i = 1, 64 do
-            local uname, uval = debug.getupvalue(iw_init, i)
-            if uname == nil then break end
-            if uname == "ICONS_PATH" and type(uval) == "table" then
-                uval[name] = dst
-                break
-            end
-        end
-    end)
 
     _TAB_ICON_NAME_CACHE[slot_id] = { src = path, name = name }
     return name
@@ -883,97 +870,19 @@ function M.applyTabIcons(fm_or_table)
 end
 
 -- ---------------------------------------------------------------------------
--- Persistent tab-bar icon patches (FileManagerMenu + ReaderMenu)
+-- Persistent tab-bar icon patch (FileManagerMenu + ReaderMenu)
 -- ---------------------------------------------------------------------------
--- Both patches hook `onShowMenu` rather than `setUpdateItemTable`.
---
--- Why onShowMenu: FileManagerMenu/ReaderMenu:onShowMenu only calls
--- setUpdateItemTable() when `self.tab_item_table == nil` (build-once, cache
--- forever per instance). Patching onShowMenu instead of setUpdateItemTable
--- guarantees our override runs on *every* menu opening, and — critically —
--- runs it by forcing the table to be built (via a dynamic `menu_self:
--- setUpdateItemTable()` call, which resolves to whatever version is
--- currently installed, including sui_quicksettings_bar's own tab-injection
--- wrap) *before* delegating to the untouched native onShowMenu that
--- actually constructs the TouchMenu widget. This sidesteps any ordering
--- dependency between this patch and sui_quicksettings_bar's own patches:
--- by the time TouchMenu:new{} runs, every tab (native + injected) already
--- has its final icon.
---
--- The SimpleUI-injected Quick Settings tab (_sui_qs_panel) is additionally
--- kept in sync directly by QSBar.refreshPanelTabIcon() (see
--- sui_quicksettings_bar.lua), since that tab is a single shared table
--- object reused by reference in both FM and Reader — mutating its `.icon`
--- field once is sufficient and avoids relying on injection-vs-override
--- ordering altogether. applyTabIcons() below still matches it too, as a
--- harmless no-op confirmation once it's present in a given tab_item_table.
+-- Registers a menu hook step that re-applies the icon overrides to the tab
+-- table whenever it is built or opened. Re-applying on every opening is
+-- required because the tab table is cached between openings.
 
--- Descriptors for the two patch targets: module path, the plugin-instance
--- flag name (read/cleared by sui_patches.lua on teardown), and a log label.
-local _TAB_PATCH_TARGETS = {
-    fm = {
-        module_path  = "apps/filemanager/filemanagermenu",
-        plugin_flag  = "_sysicon_fmmenu_patched",
-        log_label    = "FM",
-    },
-    reader = {
-        module_path  = "apps/reader/modules/readermenu",
-        plugin_flag  = "_sysicon_rdmenu_patched",
-        log_label    = "Reader",
-    },
-}
-
--- installed[target] tracks whether _installTabPatch has already run for
--- that target, so repeated calls (e.g. on plugin re-init) are no-ops.
-local _tab_patch_installed = { fm = false, reader = false }
-
-local function _installTabPatch(target, plugin)
-    if _tab_patch_installed[target] then return end
-    local t = _TAB_PATCH_TARGETS[target]
-    local Menu = package.loaded[t.module_path]
-    if not Menu then
-        local ok, m = pcall(require, t.module_path)
-        Menu = ok and m or nil
-    end
-    if not Menu then return end
-    if Menu._simpleui_sysicon_patched then return end
-
-    local orig = Menu.onShowMenu
-    Menu._simpleui_sysicon_orig    = orig
-    Menu._simpleui_sysicon_patched = true
-    if plugin then plugin[t.plugin_flag] = true end
-
-    Menu.onShowMenu = function(menu_self, ...)
-        if menu_self.tab_item_table == nil then
-            menu_self:setUpdateItemTable()
-        end
-        if menu_self.tab_item_table then
-            M.applyTabIcons(menu_self.tab_item_table)
-        end
-        return orig(menu_self, ...)
-    end
-
-    _tab_patch_installed[target] = true
-    logger.dbg("simpleui/style: " .. t.log_label .. " tab icon patch installed")
+function M.installTabIconPatch()
+    MenuHooks.register{
+        id      = "tab_icons",
+        order   = MenuHooks.ORDER.TAB_ICONS,
+        prepare = function(menu) M.applyTabIcons(menu.tab_item_table) end,
+    }
 end
-
-local function _removeTabPatch(target)
-    if not _tab_patch_installed[target] then return end
-    local t = _TAB_PATCH_TARGETS[target]
-    local Menu = package.loaded[t.module_path]
-    if Menu and Menu._simpleui_sysicon_patched then
-        Menu.onShowMenu                = Menu._simpleui_sysicon_orig
-        Menu._simpleui_sysicon_orig    = nil
-        Menu._simpleui_sysicon_patched = nil
-    end
-    _tab_patch_installed[target] = false
-    logger.dbg("simpleui/style: " .. t.log_label .. " tab icon patch removed")
-end
-
-function M.installTabIconPatch(plugin)       _installTabPatch("fm", plugin) end
-function M.removeTabIconPatch()              _removeTabPatch("fm") end
-function M.installReaderTabIconPatch(plugin) _installTabPatch("reader", plugin) end
-function M.removeReaderTabIconPatch()        _removeTabPatch("reader") end
 
 -- ---------------------------------------------------------------------------
 -- Live tab-bar icon refresh
@@ -1146,8 +1055,6 @@ function M.makeMenuItems(plugin)
                         end
                     end,
                     type(slot.label) == "function" and slot.label() or slot.label,
-                    plugin,
-                    "_sysicon_picker_" .. slot.id,
                     true
                 )
             end,
@@ -1198,6 +1105,7 @@ function M.makeMenuItems(plugin)
     _addGroupRows("sui_pager_icons")
     _addGroupRows("sui_navpager_icons")
     _addGroupRows("sui_fc_icons")
+    _addGroupRows("sui_qs_icons")
     _addGroupRows("sui_tabbar_icons")
 
     return items
@@ -1295,7 +1203,7 @@ function M.sui_build_system_icons(plugin, ctx_menu, ctx)
                                     end
                                     ctx.repaint()
                                 end)
-                            end, label, plugin, "_sysicon_picker_" .. slot.id, slot.group ~= "sui_tabbar_icons")
+                            end, label, slot.group ~= "sui_tabbar_icons")
                         end
                     }
                 end
@@ -1307,6 +1215,7 @@ function M.sui_build_system_icons(plugin, ctx_menu, ctx)
         addGroup("sui_pager_icons", _("Pagination Bar"))
         addGroup("sui_navpager_icons", _("Navpager"))
         addGroup("sui_fc_icons", _("Folder Covers"))
+        addGroup("sui_qs_icons", _("Quick Settings"))
         addGroup("sui_tabbar_icons", _("Tab Bar"))
         return rows
     end
@@ -1386,7 +1295,8 @@ M.FS_ICON     = _fs(30)
 --  text_dim             — inactive/dim text or icons (e.g. opts.dim
 --                         variants, chart axis labels).
 --  surface              — solid light background / "eraser" fill.
---  surface_flat         — flat dark background (flat-style cards, bars).
+--  surface_flat         — light gray background: the gray tone of every
+--                         surface (cards, buttons, bars, modules).
 --  gray                 — medium-weight gray: card and frame borders, the
 --                         bottom bar separator, the book cover spine/edge
 --                         line, accent borders on active controls (progress
@@ -1420,6 +1330,9 @@ M.BORDER_SZ   = math.max(1, Screen:scaleBySize(1))
 -- Thinner border and specific color for library badges and book covers
 M.BADGE_BORDER_SZ  = require("ui/size").border.thin
 M.BADGE_BORDER_CLR = M.COLOR.gray_soft
+
+-- Height of the progress bars shown by the modules and the Quick Settings panel
+M.PROGRESS_BAR_H = Screen:scaleBySize(8)
 
 -- Global size trim applied on top of every corner-badge scale (progress
 -- pentagon, pages, series index, new book) — both the Library grid's own
@@ -1489,16 +1402,67 @@ function M.glyphFace(box_px)
     return M.pxFace(M.FACE_ICONS, box_px * M.GLYPH_RATIO)
 end
 
+--- Horizontal extent of the ink of a single character, relative to the pen
+--- origin it is drawn from: `left` is the offset of its leftmost pixel and
+--- `width` the ink width. Glyphs sit inside side bearings, so aligning ink to
+--- an edge means shifting the glyph by these values rather than by its
+--- advance width. Returns nil when the font engine cannot render `char`.
+--- @param face table   font face
+--- @param char string  one UTF-8 encoded character
+--- @return table|nil   { left, width }
+function M.glyphInk(face, char)
+    local ok, ink = pcall(function()
+        local glyph = RenderText:getGlyph(face, ffiutil.utf8charcode(char))
+        return { left = glyph.l, width = glyph.bb:getWidth() }
+    end)
+    return ok and ink or nil
+end
+
 --- Face for an initial letter drawn inside a square box of `box_px` pixels.
 --- @param face string|nil  font alias, defaults to M.FACE_REGULAR
 function M.letterFace(box_px, face)
     return M.pxFace(face or M.FACE_REGULAR, box_px * M.LETTER_RATIO)
 end
 
--- Corner radius of an icon preview, relative to its side.
+-- Corner radius of an icon tile, relative to its side.
 local PREVIEW_RADIUS_RATIO = 0.22
--- Icon side inside the preview frame, relative to the frame side.
+-- Icon side inside the tile, relative to the tile side.
 local PREVIEW_ICON_RATIO   = 0.7
+
+-- Square tile of `size` pixels with a rounded gray border, `content` centred
+-- inside it.
+local function frameTile(size, content)
+    local FrameContainer  = require("ui/widget/container/framecontainer")
+    local CenterContainer = require("ui/widget/container/centercontainer")
+    local Geom            = require("ui/geometry")
+
+    local inner = size - M.BORDER_SZ * 2
+    return FrameContainer:new{
+        dimen      = Geom:new{ w = size, h = size },
+        radius     = math.floor(size * PREVIEW_RADIUS_RATIO + 0.5),
+        bordersize = M.BORDER_SZ,
+        background = M.COLOR.surface,
+        color      = M.COLOR.gray,
+        padding    = 0,
+        CenterContainer:new{
+            dimen = Geom:new{ w = inner, h = inner },
+            content,
+        },
+    }
+end
+
+--- Framed square tile around the symbol glyph `key` (an M.icon key).
+--- @param size number  tile side in pixels
+--- @param key string
+--- @return table       widget
+function M.buildGlyphTile(size, key)
+    return frameTile(size, require("ui/widget/textwidget"):new{
+        text    = M.icon(key),
+        face    = M.glyphFace(math.floor(size * PREVIEW_ICON_RATIO)),
+        fgcolor = M.COLOR.text_primary,
+        padding = 0,
+    })
+end
 
 --- Framed square preview of an icon. The content is, in order of preference:
 --- the image file or symbol glyph `opts.icon` refers to, the native icon named
@@ -1507,15 +1471,11 @@ local PREVIEW_ICON_RATIO   = 0.7
 --- @param opts table   { icon, ko_native, label }
 --- @return table       widget
 function M.buildIconPreview(size, opts)
-    local Config          = require("infra/sui_config")
-    local FrameContainer  = require("ui/widget/container/framecontainer")
-    local CenterContainer = require("ui/widget/container/centercontainer")
-    local TextWidget      = require("ui/widget/textwidget")
-    local Geom            = require("ui/geometry")
+    local Config     = require("infra/sui_config")
+    local TextWidget = require("ui/widget/textwidget")
 
     local icon      = opts.icon
     local icon_size = math.floor(size * PREVIEW_ICON_RATIO)
-    local inner     = size - M.BORDER_SZ * 2
     local content
 
     local glyph = Config.nerdIconChar(icon)
@@ -1550,24 +1510,13 @@ function M.buildIconPreview(size, opts)
 
     if not content then
         content = TextWidget:new{
-            text    = opts.label and opts.label:sub(1, 1):upper() or "?",
+            text    = opts.label and Text.cut(opts.label, 1):upper() or "?",
             face    = M.letterFace(icon_size),
             fgcolor = M.COLOR.text_primary,
         }
     end
 
-    return FrameContainer:new{
-        dimen      = Geom:new{ w = size, h = size },
-        radius     = math.floor(size * PREVIEW_RADIUS_RATIO + 0.5),
-        bordersize = M.BORDER_SZ,
-        background = M.COLOR.surface,
-        color      = M.COLOR.gray,
-        padding    = 0,
-        CenterContainer:new{
-            dimen = Geom:new{ w = inner, h = inner },
-            content,
-        },
-    }
+    return frameTile(size, content)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1580,7 +1529,14 @@ end
 -- Categories:
 --   Navigation — chevron, back, more
 --   Actions    — check, uncheck, delete, edit, add, drag
---   State      — goal, stats
+--   State      — goal
+--   Book       — book_open, reset, collections, open_with, info, cover, ...
+--   File       — select, cut, copy, paste, convert, export, terminal
+--   Folder     — folder, home, shortcut, storage, import
+--   Browsing   — search, filter, sort, arrange, history, random
+--   Windows    — close, streak, bars, library, style, quick_actions
+--   Collection — collection_add, link, unlink, remove
+--   System     — power, restart, sleep, logout
 
 M.ICON = {
     -- Navigation
@@ -1608,7 +1564,6 @@ M.ICON = {
 
     -- State / Content
     goal     = "\u{E153}",   -- flag (reading goals)
-    stats    = "\u{E24B}",   -- bar_chart
     clock    = "\u{E385}",
     page     = "\u{F40E}",
     book     = "\u{F401}",
@@ -1618,6 +1573,74 @@ M.ICON = {
     highlights = "\u{EE6B}",
     notes    = "\u{EAEC}",
     arrow_right = "\u{F178}",
+
+    -- Book actions
+    book_open   = "\u{E28B}",  -- open book (outline)
+    reset       = "\u{EB52}",  -- circular arrow
+    collections = "\u{E257}",  -- stacked layers
+    open_with   = "\u{EACB}",  -- square with outgoing arrow
+    info        = "\u{F449}",  -- circled "i"
+    cover       = "\u{F03E}",  -- framed picture
+    description = "\u{F40E}",  -- text document
+    bookmark    = "\u{F097}",  -- bookmark (outline)
+    chart       = "\u{F080}",  -- bar chart with axes
+    settings    = "\u{F423}",  -- gear
+    author      = "\u{E712}",  -- person (outline)
+    series      = "\u{E7BA}",  -- stacked books
+    tags        = "\u{EBF8}",  -- tag
+    plugin      = "\u{EB30}",  -- puzzle piece
+    group       = "\u{E73A}",  -- 3x3 grid of squares
+
+    -- Folder actions
+    folder      = "\u{E955}",  -- folder (outline)
+    new_folder  = "\u{E956}",  -- folder with plus
+    home        = "\u{ED9F}",  -- house (outline)
+    home_set    = "\u{ECF7}",  -- house with map marker
+    shortcut    = "\u{EBD1}",  -- star (outline)
+    shortcut_off = "\u{EBD0}", -- crossed star
+    storage     = "\u{EB78}",  -- memory card
+    import      = "\u{E27D}",  -- document with incoming arrow
+
+    -- File actions
+    select      = "\u{EB84}",  -- dotted selection box
+    cut         = "\u{F0C4}",  -- scissors
+    copy        = "\u{F0C5}",  -- overlapping documents
+    paste       = "\u{E891}",  -- clipboard
+    convert     = "\u{EBE0}",  -- swap arrows
+    export      = "\u{E27C}",  -- document with outgoing arrow
+    terminal    = "\u{F120}",  -- prompt
+    select_all  = "\u{EB85}",  -- full selection box
+    deselect    = "\u{EB87}",  -- crossed selection box
+    exit        = "\u{E905}",  -- door with outgoing arrow
+    list        = "\u{E978}",  -- bulleted list
+
+    -- Browsing
+    search      = "\u{F002}",  -- magnifier
+    filter      = "\u{E932}",  -- funnel (outline)
+    sort        = "\u{EBB9}",  -- sorted lines
+    arrange     = "\u{E8DA}",  -- drag handle
+    history     = "\u{E9D9}",  -- clock with arrow
+    random      = "\u{E270}",  -- die
+
+    -- Windows
+    close       = "\u{E855}",  -- cross
+    streak      = "\u{E937}",  -- flame
+    bars        = "\u{EDF9}",  -- page layout with footer
+    library     = "\u{EA30}",  -- shelves
+    style       = "\u{EAD7}",  -- paint palette
+    quick_actions = "\u{EDD3}", -- lightning bolt (outline)
+
+    -- Collections
+    collection_add = "\u{EA33}", -- library with plus
+    link        = "\u{EA36}",  -- chain link
+    unlink      = "\u{F127}",  -- broken chain link
+    remove      = "\u{E859}",  -- crossed circle (outline)
+
+    -- System
+    power       = "\u{EB24}",  -- power symbol
+    restart     = "\u{EE07}",  -- circular arrow around a play mark
+    sleep       = "\u{EBB1}",  -- crescent with z
+    logout      = "\u{EA42}",  -- door with outgoing arrow
 }
 
 --- Returns the icon glyph named `name`, or "" if it doesn't exist.

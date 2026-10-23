@@ -15,6 +15,7 @@
 --     args.override_key   -- string key used with sui_cover_overrides
 --     args.items          -- { {path=fullpath, title=display_title}, ... }
 --     args.menu           -- the FileChooser/menu widget to invalidate after a change
+--     args.on_change      -- optional; called after the cover is set or cleared
 --     args.empty_message  -- shown instead of the picker when items is empty
 --
 --   GroupActions.createCollection(args)
@@ -32,55 +33,47 @@ local CoverOverrides = require("features/library/sui_cover_overrides")
 local GroupActions = {}
 
 function GroupActions.openCoverPicker(args)
-    local UIManager    = require("ui/uimanager")
-    local ButtonDialog = require("ui/widget/buttondialog")
-        local items = args.items or {}
-    if #items == 0 then
+    local books = args.items or {}
+    if #books == 0 then
         UI.Notify.toast(args.empty_message or _("No books found."), 2)
         return
     end
 
     local override_key = args.override_key
-    local menu          = args.menu
-    local cur_override  = CoverOverrides.get(override_key)
+    local cur_override = CoverOverrides.get(override_key)
 
-    local picker
-    local buttons = {}
-
-    buttons[#buttons + 1] = {{
-        text = (not cur_override and "\u{2713} " or "  ") .. _("Auto (first book)"),
-        callback = function()
-            UIManager:close(picker)
+    local function applyOverride(book_path)
+        if book_path then
+            CoverOverrides.set(override_key, book_path)
+        else
             CoverOverrides.clear(override_key)
-            CoverOverrides.invalidateGridItem(menu, override_key)
-        end,
-    }}
+        end
+        CoverOverrides.invalidateGridItem(args.menu, override_key)
+        if args.on_change then args.on_change() end
+    end
 
-    for _, item in ipairs(items) do
+    local items = {{
+        text     = _("Auto (first book)"),
+        checked  = not cur_override,
+        callback = function() applyOverride(nil) end,
+    }}
+    for _i, item in ipairs(books) do
         local fp    = item.path
         local title = (item.title and item.title ~= "") and item.title
             or (fp:match("([^/]+)%.[^%.]+$") or fp)
-        buttons[#buttons + 1] = {{
-            text = ((cur_override == fp) and "\u{2713} " or "  ") .. title,
-            callback = function()
-                UIManager:close(picker)
-                CoverOverrides.set(override_key, fp)
-                CoverOverrides.invalidateGridItem(menu, override_key)
-            end,
-        }}
+        items[#items + 1] = {
+            text     = title,
+            checked  = cur_override == fp,
+            callback = function() applyOverride(fp) end,
+        }
     end
 
-    buttons[#buttons + 1] = {{
-        text = _("Cancel"),
-        callback = function() UIManager:close(picker) end,
-    }}
-
-    picker = ButtonDialog:new{
+    require("engines/sui_action_sheet").pick{
+        name  = "sui_win_cover_picker",
         title = args.title or _("Folder cover"),
-        title_align = "center",
-        buttons = buttons,
+        icon  = "cover",
+        items = items,
     }
-    UIManager:show(picker)
 end
 
 function GroupActions.createCollection(args)

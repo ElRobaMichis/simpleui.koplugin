@@ -104,7 +104,7 @@ A persistent tab bar at the bottom of the screen for one-tap navigation:
 
 - Up to **5 fully customisable tabs**: Library, History, Collections, Favourites, Continue Reading, Home Screen, Wi-Fi Toggle, Brightness, Stats, Bookmark Browser, and custom folder, collection, or Custom Screen shortcuts
 - **3 display modes**: icons only, text only, or icons + text
-- **3 bar styles**: Default, Framed, Bare
+- **2 navigation bar layouts**: Full-width and Floating, each with white or gray tone, optional frame and adjustable opacity
 - **Adjustable bar size, icon size, and label size**
 - **Navpager mode** — replaces the pagination bar with Prev/Next arrows at the edges of the Navigation Bar; arrows dim when there is no previous or next page
 - **Hold anywhere on the bar** to instantly open navigation settings
@@ -122,7 +122,7 @@ A slim status bar always visible at the top of the screen:
 An extra panel tab injected into KOReader's native touch menu, giving one-tap access to your favourite Quick Actions plus frontlight and warmth sliders without leaving your current screen:
 
 - Configure which Quick Actions appear, and reorder them
-- Optional **frontlight** and **warmth** sliders
+- Optional **frontlight** and **warmth** sliders in the **Minimal** or **Classic** style, aligned with the button row, also available in the reader's Book layout
 - **3 button types**: Round, Rounded Square, Bare, with adjustable label size and background
 
 ### Custom Title Bar
@@ -430,4 +430,6 @@ To report a bug, open an **Issue** and include your KOReader version and device 
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+Copyright (c) 2026 doctorhetfield-cmd
+
+Licensed under the GNU General Public License, version 3 or (at your option) any later version (GPL-3.0-or-later) — see [LICENSE](LICENSE) for details.

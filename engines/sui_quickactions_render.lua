@@ -4,9 +4,9 @@
 --
 -- Two API layers:
 --   1. Low-level primitives — QARenderer.buildIcon / .buildFrame /
---      .buildFramedIcon — build the actual icon/frame widgets. Used
---      internally by layer 2, and exposed directly for callers that need
---      finer control.
+--      .buildFramedIcon / .buildLabel — build the actual icon/frame/label
+--      widgets. Used internally by layer 2, and exposed directly for callers
+--      that need finer control.
 --   2. Declarative per-layout builders — QARenderer.buildCell /
 --      .buildListRow / .buildTabCell — one per "shape" a quick action can be
 --      rendered as. Each resolves QA.getEntry(action_id) internally, so
@@ -46,7 +46,9 @@ local function GestureRange()    _GestureRange    = _GestureRange    or require(
 local function WidgetContainer() _WidgetContainer = _WidgetContainer or require("ui/widget/container/widgetcontainer"); return _WidgetContainer end
 
 local logger   = require("logger")
+local Screen   = require("device").screen
 local Backdrop = require("infra/sui_backdrop")
+local Text     = require("infra/sui_text")
 
 -- Marks `widget` dirty whenever KOReader's theme or night-mode state changes,
 -- so its next paint reflects updated colors. Needed by any widget in this
@@ -202,7 +204,7 @@ function QARenderer.buildIcon(entry, size, fgcolor, opts)
             icon_widget = CenterContainer():new{
                 dimen = Geom():new{ w = container_w, h = container_h },
                 ui.makeColoredText{
-                    text    = (entry.label and entry.label:sub(1, 1):upper()) or "?",
+                    text    = (entry.label and Text.cut(entry.label, 1):upper()) or "?",
                     face    = style.letterFace(size, opts.fallback_face),
                     fgcolor = fgcolor,
                     padding = 0,
@@ -215,18 +217,18 @@ function QARenderer.buildIcon(entry, size, fgcolor, opts)
     return ui.wrapDimmable(icon_widget, entry.dim)
 end
 
--- Builds a size×size, transparent-background widget that paints the
--- rounded-rect fill (`bg_color`, when given) and/or border stroke
--- (`border_color`, `border_sz` thick, when > 0) that sits behind a cell's
--- content. Both go through the shared backdrop painter in
--- infra/sui_backdrop.lua: native rectangles plus cached anti-aliased
--- corner masks, so the cost depends on the corner radius only. The border is
--- drawn over the fill, and with no fill the wallpaper shows through.
--- strength: 0 skip fill, 1–99 scrim, 100 solid fill.
-local function _buildRoundedBackdrop(size, corner_r, border_sz, bg_color, border_color, strength)
-    strength = Backdrop.clampBackdropStrength(strength) or 100
+-- Surface of a frame that paints nothing.
+local NO_SURFACE = { strength = 0, border_sz = 0 }
+
+-- Builds a width×height, transparent-background widget that paints `surface`
+-- (a resolved surface: fill and border, see infra/sui_backdrop.lua) behind a
+-- cell's content, with corners of radius `corner_r`. Painting goes through the
+-- shared backdrop painter: native rectangles plus cached anti-aliased corner
+-- masks, so the cost depends on the corner radius only. With no fill the
+-- wallpaper shows through.
+local function _buildRoundedBackdrop(width, height, corner_r, surface)
     local widget = WidgetContainer():new{}
-    widget.dimen = Geom():new{ w = size, h = size }
+    widget.dimen = Geom():new{ w = width, h = height }
 
     function widget:getSize()
         return self.dimen
@@ -234,14 +236,8 @@ local function _buildRoundedBackdrop(size, corner_r, border_sz, bg_color, border
 
     function widget:paintTo(bb, x, y)
         self.dimen.x, self.dimen.y = x, y
-        if size <= 0 then return end
-
-        if bg_color and strength > 0 then
-            Backdrop.paintBackdrop(bb, x, y, size, size, strength, corner_r, bg_color)
-        end
-        if border_sz > 0 then
-            Backdrop.paintFrame(bb, x, y, size, size, border_sz, corner_r, border_color)
-        end
+        if width <= 0 or height <= 0 then return end
+        Backdrop.paintSurface(bb, x, y, width, height, surface, corner_r)
     end
 
     return _attachThemeHandlers(widget)
@@ -249,21 +245,19 @@ end
 
 -- Builds the border/background frame around `inner_widget` (typically the
 -- result of buildIcon), resolving `opts.shape` ("bare" / "round" / anything
--- else → rounded square) and `opts.bg` ("flat" / "solid" / "transparent" /
--- anything else → no fill), the same way module_quick_actions.lua's
--- buildQAWidget and sui_quicksettings_bar.lua's makeButton both did before
--- this extraction. The border/background itself is painted by
--- _buildRoundedBackdrop, behind `inner_widget`'s own padding container, so
--- both stay anti-aliased regardless of shape or radius.
+-- else → rounded square) and `opts.surface`, the resolved surface (tone,
+-- opacity and frame) drawn behind the content; a "bare" shape draws none. The
+-- surface is painted by _buildRoundedBackdrop, behind `inner_widget`'s own
+-- padding container, so it stays anti-aliased regardless of shape or radius.
 --
 -- `size` is the frame's full outer size (icon size + padding on both sides).
+--   opts.width      — outer width of a fixed_size frame wider than it is
+--     tall; `size` stays its height and sets the corner radius.
 --   opts.corner_r   — explicit "rounded square" corner radius. Defaults to
 --     size/4 (Quick Settings bar's own default before this extraction).
 --   opts.frame_pad  — inner padding between the frame's border and
 --     `inner_widget`, used when the frame sizes itself from its content
 --     (the default — see opts.fixed_size below).
---   opts.border_sz  — border thickness when a border is drawn. Defaults to
---     SUIStyle.BORDER_SZ.
 --   opts.fixed_size — when true, `inner_widget` is re-centered inside a
 --     CenterContainer sized to account for the border, instead of letting
 --     the frame grow from `inner_widget` + padding. This is how the Quick
@@ -273,17 +267,10 @@ end
 --     both consumers.
 function QARenderer.buildFrame(inner_widget, size, opts)
     opts = opts or {}
-    local style = SUIStyle()
 
     local shape = opts.shape or "rounded_square"
-    local bg    = opts.bg or "solid"
     local is_bare = (shape == "bare")
-
-    -- Fill opacity: explicit opts.strength, else transparent → 0, solid/flat → 100.
-    local strength = Backdrop.clampBackdropStrength(opts.strength)
-    if strength == nil then
-        strength = (bg == "transparent") and 0 or 100
-    end
+    local surface = (not is_bare and opts.surface) or NO_SURFACE
 
     local corner_r
     if is_bare then
@@ -294,29 +281,21 @@ function QARenderer.buildFrame(inner_widget, size, opts)
         corner_r = opts.corner_r or math.floor(size / 4)
     end
 
-    local border_sz = opts.border_sz or style.BORDER_SZ
-    -- Border for solid/transparent styles (not flat, not bare).
-    local current_border = (not is_bare and bg ~= "flat") and border_sz or 0
+    local current_border = surface.border_sz
+    local has_fill = surface.strength > 0
 
-    local bg_color = nil
-    if not is_bare and strength > 0 then
-        if bg == "flat" then
-            bg_color = style.COLOR.surface_flat
-        else
-            bg_color = style.COLOR.surface
-        end
-    end
+    local width = opts.fixed_size and opts.width or size
 
     local content
     if opts.fixed_size then
         content = FrameContainer():new{
-            width      = size,
+            width      = width,
             height     = size,
             bordersize = 0,
             padding    = 0,
             CenterContainer():new{
                 dimen = Geom():new{
-                    w = size - current_border * 2,
+                    w = width - current_border * 2,
                     h = size - current_border * 2,
                 },
                 inner_widget,
@@ -332,13 +311,13 @@ function QARenderer.buildFrame(inner_widget, size, opts)
 
     -- Nothing to paint behind the content: skip the backdrop and its
     -- offscreen buffer entirely.
-    if corner_r == 0 and current_border == 0 and not bg_color then
+    if corner_r == 0 and current_border == 0 and not has_fill then
         return content
     end
 
-    local backdrop = _buildRoundedBackdrop(size, corner_r, current_border, bg_color, style.COLOR.gray, strength)
+    local backdrop = _buildRoundedBackdrop(width, size, corner_r, surface)
     local overlap = OverlapGroup():new{
-        dimen = Geom():new{ w = size, h = size },
+        dimen = Geom():new{ w = width, h = size },
         backdrop,
         content,
     }
@@ -429,7 +408,27 @@ end
 -- Label face of a cell or row: the caller's resolved face when given, else
 -- the default UI face at spec.lbl_fs.
 local function _labelFace(spec)
-    return spec.lbl_face or Font():getFace(SUIStyle().FACE_REGULAR, spec.lbl_fs or 15)
+    return spec.lbl_face or Font():getFace(SUIStyle().FACE_REGULAR, spec.lbl_fs or SUIStyle().FS_DETAIL)
+end
+
+-- Builds a single-line label that never exceeds `opts.max_width`: longer text
+-- is cut with a trailing ellipsis.
+-- opts: text, face, bold, fgcolor, max_width — forwarded to TextWidget.
+function QARenderer.buildLabel(opts)
+    return TextWidget():new{
+        text                   = opts.text,
+        face                   = opts.face,
+        bold                   = opts.bold,
+        fgcolor                = opts.fgcolor,
+        max_width              = opts.max_width,
+        truncate_with_ellipsis = true,
+    }
+end
+
+-- Widest label a tab cell of width `tab_w` can hold: the cell minus a small
+-- margin on each side, so neighbouring labels never touch.
+function QARenderer.tabLabelMaxWidth(tab_w)
+    return tab_w - 2 * Screen:scaleBySize(4)
 end
 
 -- Builds one "cell": an icon inside a buildFrame, with an optional label
@@ -445,7 +444,7 @@ end
 --
 -- spec fields:
 --   icon_sz, frame_sz        — required. frame_sz is the full button size.
---   fixed_size, corner_r, frame_pad, border_sz, shape, bg  — forwarded to
+--   fixed_size, corner_r, frame_pad, shape, surface  — forwarded to
 --     buildFrame (see its doc comment).
 --   fgcolor                  — icon/label color (default SUIStyle.COLOR.text_primary).
 --   icon_opts                — forwarded to buildIcon (see its doc comment).
@@ -454,12 +453,7 @@ end
 --     it the default UI face at lbl_fs is used. lbl_bold asks the text widget
 --     to embolden the label (the face has no bold file of its own).
 --   lbl_w                    — label CenterContainer width (default frame_sz).
---   lbl_width                — sets TextWidget.width directly (wrapping, no
---     truncation) — used by the Quick Settings bar.
---   lbl_max_width, lbl_truncate — sets TextWidget.max_width +
---     truncate_with_ellipsis — used by the Quick Actions Row. Mutually
---     exclusive with lbl_width; the two consumers use different label-
---     overflow strategies and this preserves both exactly.
+--     Labels longer than this are truncated with an ellipsis.
 --   on_tap_fn, tap_event_name  — when on_tap_fn is given, the cell is
 --     wrapped in an InputContainer with its own tap GestureRange dispatching
 --     to on_tap_fn(action_id). When omitted, the cell is returned untapped
@@ -475,11 +469,9 @@ function QARenderer.buildCell(action_id, spec)
     local icon_widget = QARenderer.buildIcon(entry, spec.icon_sz, fgcolor, spec.icon_opts)
     local frame_widget = QARenderer.buildFrame(icon_widget, frame_sz, {
         shape      = spec.shape,
-        bg         = spec.bg,
-        strength   = spec.strength,
+        surface    = spec.surface,
         corner_r   = spec.corner_r,
         frame_pad  = spec.frame_pad,
-        border_sz  = spec.border_sz,
         fixed_size = spec.fixed_size,
     })
 
@@ -492,14 +484,12 @@ function QARenderer.buildCell(action_id, spec)
         local lbl_w = spec.lbl_w or frame_sz
         col[#col + 1] = CenterContainer():new{
             dimen = Geom():new{ w = lbl_w, h = spec.lbl_h or 0 },
-            TextWidget():new{
-                text                   = entry.label,
-                face                   = _labelFace(spec),
-                bold                   = spec.lbl_bold,
-                fgcolor                = fgcolor,
-                width                  = spec.lbl_width,
-                max_width              = spec.lbl_max_width,
-                truncate_with_ellipsis = spec.lbl_truncate,
+            QARenderer.buildLabel{
+                text      = entry.label,
+                face      = _labelFace(spec),
+                bold      = spec.lbl_bold,
+                fgcolor   = fgcolor,
+                max_width = lbl_w,
             },
         }
         col_h = col_h + (spec.lbl_sp or 0) + (spec.lbl_h or 0)
@@ -514,8 +504,9 @@ function QARenderer.buildCell(action_id, spec)
 end
 
 -- Builds one list row: icon (optional) on the left, label on the right,
--- tappable. The row is only as wide as its content (capped at `spec.inner_w`);
--- the caller aligns rows against each other. Used by the Action List module.
+-- tappable. The row is only as wide as its content (capped at `spec.inner_w`,
+-- with longer labels truncated by an ellipsis); the caller aligns rows against
+-- each other. Used by the Action List module.
 --
 -- spec fields:
 --   inner_w, row_h            — required.
@@ -539,12 +530,13 @@ function QARenderer.buildListRow(action_id, spec)
     end
 
     local label_tw = ui.makeColoredText{
-        text    = entry.label,
-        face    = _labelFace(spec),
-        bold    = spec.lbl_bold,
-        fgcolor = fgcolor,
-        width   = text_w,
-        padding = 0,
+        text                   = entry.label,
+        face                   = _labelFace(spec),
+        bold                   = spec.lbl_bold,
+        fgcolor                = fgcolor,
+        max_width              = text_w,
+        truncate_with_ellipsis = true,
+        padding                = 0,
     }
 
     local content_w = spec.show_icon
@@ -570,18 +562,19 @@ end
 --
 -- Icons always render via buildIcon regardless of bar style: raster icons keep
 -- their original colours and a missing/invalid file falls back to a
--- single-letter widget.
+-- single-letter widget. Labels are truncated to fit the cell
+-- (see tabLabelMaxWidth).
 --
 -- spec fields:
 --   tab_w, bar_h, icon_sz, icon_txt_sp, indic_h  — required sizing.
 --   lbl_face, lbl_bold — font face of the tab label and its emboldening flag;
 --     same convention as buildCell.
 --   mode        — "icons" / "text" / "both".
---   bar_style   — "default" draws the active-indicator line; any other value
---     draws none.
+--   full_width  — true draws the active-indicator line (full-width bar);
+--     a floating bar draws none.
 --   fgcolor     — icon/label color (also used as the active-indicator color).
---   inactive_indicator_color — drawn under the bar in "default" style when
---     the tab isn't active and the navbar isn't transparent; nil = omitted.
+--   inactive_indicator_color — drawn under a full-width bar's top edge when
+--     the tab isn't active and the bar is opaque; nil = omitted.
 function QARenderer.buildTabCell(action_id, active, spec)
     spec = spec or {}
     local style = SUIStyle()
@@ -603,11 +596,12 @@ function QARenderer.buildTabCell(action_id, active, spec)
         if mode == "both" then
             vg[#vg + 1] = VerticalSpan():new{ width = spec.icon_txt_sp or 0 }
         end
-        vg[#vg + 1] = TextWidget():new{
-            text    = entry.label,
-            face    = _labelFace(spec),
-            fgcolor = item_fg,
-            bold    = spec.lbl_bold,
+        vg[#vg + 1] = QARenderer.buildLabel{
+            text      = entry.label,
+            face      = _labelFace(spec),
+            bold      = spec.lbl_bold,
+            fgcolor   = item_fg,
+            max_width = QARenderer.tabLabelMaxWidth(spec.tab_w),
         }
     end
 
@@ -624,7 +618,7 @@ function QARenderer.buildTabCell(action_id, active, spec)
         content,
     }
 
-    if spec.bar_style == "default" then
+    if spec.full_width then
         if active then
             og[#og + 1] = LineWidget():new{
                 dimen          = Geom():new{ w = spec.tab_w, h = spec.indic_h },

@@ -7,7 +7,6 @@ local Device          = require("device")
 local Font            = require("ui/font")
 local FrameContainer  = require("ui/widget/container/framecontainer")
 local Geom            = require("ui/geometry")
-local UIManager       = require("ui/uimanager")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan  = require("ui/widget/horizontalspan")
 local TextWidget      = require("ui/widget/textwidget")
@@ -15,12 +14,14 @@ local Screen          = Device.screen
 local _ = require("infra/sui_i18n").translate
 local N_ = require("infra/sui_i18n").ngettext
 local Config          = require("infra/sui_config")
+local Arrange         = require("features/sui_arrange")
 local QA              = require("features/sui_quickactions")
 local QARenderer      = require("engines/sui_quickactions_render")
 
 local UI  = require("infra/sui_core")
 local SUISettings = require("infra/sui_store")
 local Backdrop    = require("infra/sui_backdrop")
+local SUIWallpaper = require("features/sui_wallpaper")
 local SUIStyle    = require("features/sui_style")
 local PAD = UI.PAD
 local LABEL_H = UI.LABEL_H
@@ -141,7 +142,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Core widget builder (shared by all slots)
 -- ---------------------------------------------------------------------------
-local function buildQAWidget(w, action_ids, show_labels, on_tap_fn, d, shape, bg, colors, align, strength)
+local function buildQAWidget(w, action_ids, show_labels, on_tap_fn, d, shape, surface, colors, align)
     local clr_blk = colors and colors.blk or SUIStyle.COLOR.text_primary
     local clr_sub = colors and colors.sub or CLR_TEXT_SUB
     local ph_fs = math.max(8, math.floor(_BASE_PH_FS * (d.frame_sz / (_BASE_ICON_SZ + _BASE_FRAME_PAD * 2))))
@@ -197,8 +198,7 @@ local function buildQAWidget(w, action_ids, show_labels, on_tap_fn, d, shape, bg
             frame_pad      = d.frame_pad,
             corner_r       = d.corner_r,
             shape          = shape,
-            bg             = bg,
-            strength       = strength,
+            surface        = surface,
             fgcolor        = clr_blk,
             show_label     = show_labels,
             lbl_sp         = lbl_sp,
@@ -206,8 +206,6 @@ local function buildQAWidget(w, action_ids, show_labels, on_tap_fn, d, shape, bg
             lbl_fs         = d.lbl_fs,
             lbl_face       = d.lbl_face,
             lbl_bold       = d.lbl_bold,
-            lbl_max_width  = d.frame_sz,
-            lbl_truncate   = true,
             on_tap_fn      = on_tap_fn,
             tap_event_name = "TapQA",
         })
@@ -249,32 +247,21 @@ local function makeInstance(inst_id)
     -- Keys built at call-time using ctx.pfx — works for any page prefix.
     local slot_suffix = inst_id
     local SHAPE_KEY    = slot_suffix .. "_shape"
-    local BG_KEY       = slot_suffix .. "_bg"
+    local LOOK_KEY     = slot_suffix .. "_bg"            -- single-choice look of earlier versions
     local ALIGN_KEY    = slot_suffix .. "_align"
-    local STRENGTH_KEY = slot_suffix .. "_btn_strength"
+    local SURFACE_KEY  = slot_suffix .. "_btn"
+    local STRENGTH_KEY = SURFACE_KEY .. "_strength"
 
     local function getShape(pfx)
         return SUISettings:readSetting(pfx .. SHAPE_KEY) or "rounded_square"
     end
 
-    -- Color style: solid | flat (transparent folds into strength 0).
-    local function getBg(pfx)
-        local v = SUISettings:readSetting(pfx .. BG_KEY) or "solid"
-        if v == "transparent" then return "solid" end
-        return v
-    end
-
-    local function getBtnStrength(pfx)
-        local v = Backdrop.readBackdropStrength(pfx .. STRENGTH_KEY)
-        if v ~= nil then return v end
-        if SUISettings:readSetting(pfx .. BG_KEY) == "transparent" then
-            return 0
-        end
-        return 100
-    end
-
-    local function setBtnStrength(pfx, n)
-        Backdrop.saveBackdropStrength(pfx .. STRENGTH_KEY, n)
+    -- Surface of the buttons; the look stored by earlier versions is
+    -- converted on first use (see Backdrop.migrateLook).
+    local function buttonSurface(pfx)
+        local surface = Backdrop.surface("button", pfx .. SURFACE_KEY, pfx .. STRENGTH_KEY)
+        Backdrop.migrateLook(surface, pfx .. LOOK_KEY)
+        return surface
     end
 
     -- "current" (default) = existing behaviour, icons spread across the full
@@ -345,81 +332,6 @@ local function makeInstance(inst_id)
         local items_key  = ctx_menu.pfx_qa .. slot_n .. "_items"
         local labels_key = ctx_menu.pfx_qa .. slot_n .. "_labels"
         local slot_label = _("Quick Actions Row")
-        local function getItems() return SUISettings:readSetting(items_key) or {} end
-        local function isSelected(id)
-            for _i, v in ipairs(getItems()) do if v == id then return true end end
-            return false
-        end
-        local function toggleItem(id)
-            local items = getItems()
-            local new_items = {}
-            local found = false
-            for _i, v in ipairs(items) do
-                if v == id then found = true else new_items[#new_items + 1] = v end
-            end
-            if not found then
-                if #items >= MAX_QA then
-                    UI.Notify.toast(string.format(N_("The maximum of %d action per module has been reached. Remove one first.", "The maximum of %d actions per module has been reached. Remove one first.", MAX_QA), MAX_QA), 2)
-                    return
-                end
-                new_items[#new_items + 1] = id
-            end
-            SUISettings:saveSetting(items_key, new_items)
-            ctx_menu.refresh()
-        end
-
-        local items_sub = {}
-        local sorted_pool = {}
-        for _i, a in ipairs(getQAPool()) do sorted_pool[#sorted_pool + 1] = a end
-        table.sort(sorted_pool, function(a, b) return a.label:lower() < b.label:lower() end)
-        items_sub[#items_sub + 1] = {
-            text           = _("Arrange Items"),
-            keep_menu_open = true,
-            separator      = true,
-            enabled_func   = function() return #getItems() >= 2 end,
-            callback       = function()
-                local qa_ids = getItems()
-                if #qa_ids < 2 then
-                    UI.Notify.toast(_("Add at least 2 actions to arrange."), 2)
-                    return
-                end
-                local pool_labels = {}
-                for _i, a in ipairs(getQAPool()) do pool_labels[a.id] = a.label end
-                local sort_items = {}
-                for _i, id in ipairs(qa_ids) do
-                    sort_items[#sort_items + 1] = { text = pool_labels[id] or id, orig_item = id }
-                end
-                local function on_save()
-                    local new_order = {}
-                    for _i, item in ipairs(sort_items) do new_order[#new_order + 1] = item.orig_item end
-                    SUISettings:saveSetting(items_key, new_order)
-                    ctx_menu.refresh()
-                end
-                local SortWidget = ctx_menu.SortWidget or require("ui/widget/sortwidget")
-                local uim = ctx_menu.UIManager or UIManager
-                uim:show(SortWidget:new{
-                    title             = string.format(_("Arrange %s"), slot_label),
-                    covers_fullscreen = true,
-                    item_table        = sort_items,
-                    callback          = on_save,
-                })
-            end,
-        }
-        for _i, a in ipairs(sorted_pool) do
-            local aid = a.id
-            local _lbl = a.label
-            items_sub[#items_sub + 1] = {
-                text_func = function()
-                    if isSelected(aid) then return _lbl end
-                    local rem = MAX_QA - #getItems()
-                    if rem <= 2 then return _lbl .. string.format(N_("  (%d left)", "  (%d left)", rem), rem) end
-                    return _lbl
-                end,
-                checked_func   = function() return isSelected(aid) end,
-                keep_menu_open = true,
-                callback       = function() toggleItem(aid) end,
-            }
-        end
         return {
             {
                 text           = _("Hide Label"),
@@ -431,88 +343,22 @@ local function makeInstance(inst_id)
                     ctx_menu.refresh()
                 end,
             },
-            {
-                text                = _("Quick Actions"),
-                sub_item_table_func = function() return items_sub end,
-                sui_build = ctx_menu.is_sui and function(ctx, _item)
-                    local SUIWindow = require("engines/sui_window")
-                    return SUIWindow.ListRow{
-                        title        = _("Quick Actions"),
-                        subtitle     = function()
-                            local qa_ids = getItems()
-                            if #qa_ids == 0 then return _("No items selected.") end
-                            local pool_labels = {}
-                            for _, a in ipairs(getQAPool()) do pool_labels[a.id] = a.label end
-                            local names = {}
-                            for _, id in ipairs(qa_ids) do
-                                names[#names + 1] = pool_labels[id] or id
-                            end
-                            return table.concat(names, "  ·  ")
-                        end,
-                        inner_w      = ctx.inner_w,
-                        item_count   = function() return #getItems() end,
-                        max_items    = MAX_QA,
-                        show_chevron = true,
-                        on_tap       = function()
-                            local qa_ids = getItems()
-                            local pool_labels = {}
-                            for _, a in ipairs(getQAPool()) do pool_labels[a.id] = a.label end
-                            local sort_items = {}
-                            for _, id in ipairs(qa_ids) do
-                                sort_items[#sort_items + 1] = { text = pool_labels[id] or id, orig_item = id }
-                            end
-                            
-                            ctx.push("arrange", {
-                                title = _("Quick Actions"),
-                                items = sort_items,
-                                empty_text = _("No items selected."),
-                                item_count = function() return #getItems() end,
-                                max_items  = MAX_QA,
-                                on_delete = function(item) end,
-                                on_change = function(items_to_save)
-                                    local new_order = {}
-                                    for _, it in ipairs(items_to_save) do new_order[#new_order + 1] = it.orig_item end
-                                    SUISettings:saveSetting(items_key, new_order)
-                                    ctx_menu.refresh()
-                                end,
-                                footer_text = _("Add Item"),
-                                footer_action = function(ctx2)
-                                    local picker_items = {}
-                                    local sorted_pool2 = {}
-                                    for _, a in ipairs(getQAPool()) do sorted_pool2[#sorted_pool2 + 1] = a end
-                                    table.sort(sorted_pool2, function(a, b) return a.label:lower() < b.label:lower() end)
-
-                                    for _, a in ipairs(sorted_pool2) do
-                                        if not isSelected(a.id) then
-                                            local _id = a.id
-                                            local _label = a.label
-                                            picker_items[#picker_items + 1] = {
-                                                text   = _label,
-                                                on_tap = function(picker_ctx)
-                                                    local cur = getItems()
-                                                    if #cur >= MAX_QA then
-                                                        UI.Notify.toast(string.format(N_("The maximum of %d action per module has been reached. Remove one first.", "The maximum of %d actions per module has been reached. Remove one first.", MAX_QA), MAX_QA), 2)
-                                                        return
-                                                    end
-                                                    cur[#cur + 1] = _id
-                                                    SUISettings:saveSetting(items_key, cur)
-                                                    table.insert(sort_items, { text = _label, orig_item = _id })
-                                                    ctx_menu.refresh()
-                                                    picker_ctx.pop()
-                                                    ctx2.repaint()
-                                                end,
-                                            }
-                                        end
-                                    end
-                                    ctx2.push("item_picker", {
-                                        title = _("Add Item"),
-                                        items = picker_items,
-                                    })
-                                end
-                            })
-                        end
-                    }
-                end or nil,
+            Arrange.makeListItem{
+                ctx_menu = ctx_menu,
+                title    = _("Quick Actions"),
+                labels   = {
+                    action  = string.format(_("Arrange %s"), slot_label),
+                    empty   = _("No items selected."),
+                    too_few = _("Add at least 2 actions to arrange."),
+                    full    = function(max)
+                        return string.format(N_("The maximum of %d action per module has been reached. Remove one first.",
+                            "The maximum of %d actions per module has been reached. Remove one first.", max), max)
+                    end,
+                },
+                max    = MAX_QA,
+                pool   = getQAPool,
+                getIds = function() return SUISettings:readSetting(items_key) or {} end,
+                setIds = function(ids) SUISettings:saveSetting(items_key, ids) end,
             },
         }
     end
@@ -548,7 +394,7 @@ local function makeInstance(inst_id)
         local styles = Config.resolveTextStyles(ctx, S.id, S.text_elems)
         d.lbl_fs = math.max(6, math.floor(d.lbl_fs * lf * (styles.label.scale or 1)))
         d.lbl_face, d.lbl_bold = SUIStyle.getTextFace(styles.label, d.lbl_fs)
-        return buildQAWidget(w, qa_ids, show_labels, ctx.on_qa_tap, d, getShape(ctx.pfx), getBg(ctx.pfx), nil, getAlign(ctx.pfx), getBtnStrength(ctx.pfx))
+        return buildQAWidget(w, qa_ids, show_labels, ctx.on_qa_tap, d, getShape(ctx.pfx), SUIWallpaper.resolveSurface(buttonSurface(ctx.pfx)), nil, getAlign(ctx.pfx))
     end
 
     function S.getHeight(ctx)
@@ -618,26 +464,12 @@ local function makeInstance(inst_id)
             set     = function(v) SUISettings:saveSetting(pfx .. SHAPE_KEY, v) end,
             refresh = refresh,
         }
-        appearance_extra[#appearance_extra + 1] = Config.makeRadioSubmenuItem{
-            text         = _lc("Button Style"),
+        appearance_extra[#appearance_extra + 1] = Config.makeSurfaceMenu{
+            surface      = buttonSurface(pfx),
             enabled_func = function() return getShape(pfx) ~= "bare" end,
-            options      = {
-                { value = "solid", label = _lc("Solid") },
-                { value = "flat",  label = _lc("Flat") },
-            },
-            get          = function() return getBg(pfx) end,
-            set          = function(v) SUISettings:saveSetting(pfx .. BG_KEY, v) end,
             refresh      = refresh,
+            _lc          = _lc,
         }
-        appearance_extra[#appearance_extra + 1] = Config.makeBackdropStrengthItem({
-            title         = _lc("Button Opacity"),
-            enabled_func  = function() return getShape(pfx) ~= "bare" end,
-            get           = function() return getBtnStrength(pfx) end,
-            set           = function(v) setBtnStrength(pfx, v) end,
-            refresh       = refresh,
-            default_value = 100,
-            _lc           = _lc,
-        })
         appearance_extra[#appearance_extra + 1] = Config.makeRadioSubmenuItem{
             text    = _lc("Alignment"),
             options = {
@@ -671,6 +503,20 @@ M.id           = "quick_actions_row"
 M.name         = _("Quick Actions Row")
 M.instanciable = true
 M.makeInstance = makeInstance
+M.menu_group   = "quick_actions"
+-- Settings of an instance's buttons: opacity, tone and frame of their surface.
+M.setting_suffixes = { "_btn_strength", "_btn_tone", "_btn_show_frame" }
+
+-- Layout-editor summary of an instance: the labels of its configured actions.
+function M.getInstanceSubtitle(inst_id, _pfx, pfx_qa)
+    local names = {}
+    for _, qa_id in ipairs(SUISettings:readSetting(pfx_qa .. inst_id .. "_items") or {}) do
+        local entry = QA.getEntry(qa_id)
+        names[#names + 1] = entry and entry.label or qa_id
+    end
+    if #names == 0 then return _("No actions configured") end
+    return table.concat(names, "  ·  ")
+end
 
 -- Expose base frame size for menu.lua (MAX_QA_ITEMS referenced there).
 -- Returns the 100%-scale value; callers that need the current scaled value

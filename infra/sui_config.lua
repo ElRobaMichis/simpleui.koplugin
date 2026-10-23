@@ -10,10 +10,13 @@ local Blitbuffer        = require("ffi/blitbuffer")
 local DataStorage       = require("datastorage")
 local SUISettings       = require("infra/sui_store")
 local SUICoverCache     = require("infra/sui_cover_cache")
-local RasterCache       = require("infra/sui_raster_cache")
+local LRU               = require("infra/sui_lru")
+local Memory            = require("infra/sui_memory")
 local Backdrop          = require("infra/sui_backdrop")
 local logger            = require("logger")
 local _ = require("infra/sui_i18n").translate
+local Text = require("infra/sui_text")
+local util = require("util")
 local T = require("ffi/util").template
 
 local M = {}
@@ -216,16 +219,7 @@ end
 
 function M.setTopbarCustomText(s)
     if type(s) == "string" then
-        local count, i, out = 0, 1, {}
-        while i <= #s do
-            local byte = s:byte(i)
-            local clen = byte >= 240 and 4 or byte >= 224 and 3 or byte >= 192 and 2 or 1
-            count = count + 1
-            if count > TOPBAR_CUSTOM_TEXT_MAX then break end
-            out[#out + 1] = s:sub(i, i + clen - 1)
-            i = i + clen
-        end
-        s = table.concat(out)
+        s = Text.cut(s, TOPBAR_CUSTOM_TEXT_MAX)
     else
         s = ""
     end
@@ -546,10 +540,8 @@ end
 
 function M.sanitizeLabel(s)
     if type(s) ~= "string" then return nil end
-    s = s:match("^%s*(.-)%s*$")
-    if #s == 0 then return nil end
-    if #s > M.MAX_LABEL_LEN then s = s:sub(1, M.MAX_LABEL_LEN) end
-    return s
+    s = Text.cut(util.trim(s), M.MAX_LABEL_LEN)
+    return s ~= "" and s or nil
 end
 
 -- Converts a "nerd:XXXX" hex string to a UTF-8 character.
@@ -1240,8 +1232,7 @@ function M.makeScaleItem(opts)
         value_func     = function() return opts.get() .. "%" end,
         callback       = function()
             if enabled_func and not enabled_func() then
-                local UIManager   = require("ui/uimanager")
-                UI.Notify.toast(_("Disable \"Lock Scale\" first to set a per-module scale."))
+                require("infra/sui_core").Notify.toast(_("Disable \"Lock Scale\" first to set a per-module scale."))
                 return
             end
             local SpinWidget = require("ui/widget/spinwidget")
@@ -1333,6 +1324,71 @@ function M.makeBackdropStrengthItem(opts)
                 end,
             })
         end,
+    }
+end
+
+-- Rows editing a surface (see infra/sui_backdrop.lua), the same on every
+-- surface: Color (white or gray), Frame and Background Opacity.
+-- opts: {
+--   surface      — surface descriptor (Backdrop.surface)
+--   refresh      — called once a value is applied
+--   with_strength — false, or a function returning false when the menu is
+--                  opened, leaves out the Opacity row. Default: the row is
+--                  listed only while a wallpaper is active, the only case
+--                  where opacity shows
+--   get_strength — optional opacity getter, instead of the stored value
+--   set_strength — optional opacity setter, instead of the stored value
+--   _lc          — optional translator (defaults to the plugin translator)
+-- }
+function M.makeSurfaceItems(opts)
+    local _lc, surface, refresh = opts._lc or _, opts.surface, opts.refresh
+    local with_strength = opts.with_strength
+    if with_strength == nil then
+        with_strength = require("features/sui_wallpaper").isWallpaperActive
+    end
+    if type(with_strength) == "function" then with_strength = with_strength() end
+    local items = {
+        M.makeRadioSubmenuItem{
+            text    = _lc("Color"),
+            options = {
+                { value = Backdrop.TONE.WHITE, label = _lc("White") },
+                { value = Backdrop.TONE.GRAY,  label = _lc("Gray") },
+            },
+            get     = function() return Backdrop.readTone(surface) end,
+            set     = function(tone) Backdrop.saveTone(surface, tone) end,
+            refresh = refresh,
+        },
+    }
+    items[#items + 1] = {
+        text           = _lc("Frame"),
+        checked_func   = function() return Backdrop.readFrame(surface) end,
+        keep_menu_open = true,
+        callback       = function()
+            Backdrop.saveFrame(surface, not Backdrop.readFrame(surface))
+            refresh()
+        end,
+    }
+    if with_strength ~= false then
+        items[#items + 1] = M.makeBackdropStrengthItem{
+            title         = _lc("Background Opacity"),
+            get           = opts.get_strength or function() return Backdrop.readStrength(surface) end,
+            set           = opts.set_strength or function(n) Backdrop.saveStrength(surface, n) end,
+            refresh       = refresh,
+            default_value = surface.defaults.strength,
+            _lc           = _lc,
+        }
+    end
+    return items
+end
+
+-- The "Background" submenu holding the rows of makeSurfaceItems. `opts` is as
+-- there, plus
+--   enabled_func — optional enabled state of the submenu
+function M.makeSurfaceMenu(opts)
+    return {
+        text           = (opts._lc or _)("Background"),
+        enabled_func        = opts.enabled_func,
+        sub_item_table_func = function() return M.makeSurfaceItems(opts) end,
     }
 end
 
@@ -1511,7 +1567,7 @@ function M.getBentoWidth(mod_id, pfx)
     if not mod_id then return BENTO_DEF end
     local v = SUISettings:get(_bentoKey(mod_id, pfx))
     if v == nil then
-        -- One-shot migration from the old userpatch key (G_reader_settings).
+        -- One-shot migration from the legacy key (G_reader_settings).
         local legacy = _G.G_reader_settings and _G.G_reader_settings:readSetting("simpleui_bento_width_" .. mod_id)
         if legacy ~= nil then
             local n = _clampBento(legacy)
@@ -1903,6 +1959,176 @@ function M.applyVisibilityToggle(item, opts)
     return item
 end
 
+-- A fixed set of items the user can hide and reorder. Returns a list with:
+--   list.rows()       menu rows: an entry opening the arrange screen (an eye
+--                     toggle per item in the SUI menu, a reorder-only
+--                     SortWidget in the classic menu) plus, in the classic
+--                     menu, one checklist row per item for visibility.
+--   list.arrange(ctx) pushes the arrange screen onto a SUI settings window.
+-- Options:
+--   opts.ids           default order of every item id
+--   opts.order_key     setting key holding the saved order
+--   opts.label         function(id) -> display text
+--   opts.is_visible    function(id) -> boolean
+--   opts.set_visible   function(id, visible)
+--   opts.refresh       function run after every change
+--   opts.ctx           menu context (is_sui, UIManager, SortWidget, translate)
+--   opts.title         title of the arrange screen (default "Items")
+--   opts.text          label of the classic row (default "Arrange")
+--   opts.toggle_label  function(id) -> classic checklist text (default: label)
+--   opts.empty_text    text shown when no item is visible
+--   opts.enabled_func  function() -> boolean (default: always enabled)
+--   opts.nested        { [id] = list }: tapping that item on the arrange
+--                      screen opens the arrange screen of another list
+--   opts.is_available  function(id) -> boolean: items reporting false are left
+--                      out of the menus and keep their slot in the saved order
+--   opts.anchors       { [id] = true }: fixed items that are always shown. They
+--                      can be moved but not hidden, and appear as a divider
+function M.makeOrderedItems(opts)
+    local ctx        = opts.ctx or {}
+    local _lc        = ctx._ or _
+    local title      = opts.title or _lc("Items")
+    local empty_text = opts.empty_text or _lc("No items selected.")
+    local enabled    = opts.enabled_func or function() return true end
+    local nested     = opts.nested or {}
+    local anchors    = opts.anchors or {}
+    local available  = opts.is_available or function() return true end
+
+    local function fullOrder()
+        return M.mergeOrder(SUISettings:readSetting(opts.order_key), opts.ids)
+    end
+
+    local function order()
+        local out = {}
+        for _i, id in ipairs(fullOrder()) do
+            if available(id) then out[#out + 1] = id end
+        end
+        return out
+    end
+
+    local function visibleIds()
+        local out = {}
+        for _i, id in ipairs(order()) do
+            if not anchors[id] and opts.is_visible(id) then out[#out + 1] = id end
+        end
+        return out
+    end
+
+    -- Sort entries in saved order; `decorate(entry, id)` may extend each one.
+    local function sortItems(decorate)
+        local items = {}
+        for _i, id in ipairs(order()) do
+            local entry = { text = opts.label(id), orig_item = id }
+            if anchors[id] then
+                entry.text       = entry.text:upper()
+                entry.is_divider = true
+            elseif decorate then
+                entry = decorate(entry, id)
+            end
+            items[#items + 1] = entry
+        end
+        return items
+    end
+
+    -- Saves the arranged available items; the others keep their slot.
+    local function saveOrder(items)
+        local arranged, n, ids = {}, 0, {}
+        for _i, it in ipairs(items) do arranged[#arranged + 1] = it.orig_item end
+        for _i, id in ipairs(fullOrder()) do
+            if available(id) then
+                n = n + 1
+                ids[#ids + 1] = arranged[n]
+            else
+                ids[#ids + 1] = id
+            end
+        end
+        SUISettings:saveSetting(opts.order_key, ids)
+        opts.refresh()
+    end
+
+    local list = {}
+
+    function list.arrange(ctx2)
+        ctx2.push("arrange", {
+            title      = title,
+            items      = sortItems(function(entry, id)
+                M.applyVisibilityToggle(entry, {
+                    is_visible  = function() return opts.is_visible(id) end,
+                    set_visible = function(visible) opts.set_visible(id, visible) end,
+                    on_change   = opts.refresh,
+                    repaint     = ctx2.repaint,
+                })
+                local child = nested[id]
+                if child then
+                    entry.show_chevron = true
+                    entry.on_tap       = function() child.arrange(ctx2) end
+                end
+                return entry
+            end),
+            empty_text = empty_text,
+            on_change  = saveOrder,
+        })
+    end
+
+    function list.rows()
+        local row = {
+            text           = opts.text or _lc("Arrange"),
+            keep_menu_open = true,
+            enabled_func   = enabled,
+            callback       = function()
+                local items = sortItems()
+                if #items < 2 then return end
+                local SortWidget = ctx.SortWidget or require("ui/widget/sortwidget")
+                local uim        = ctx.UIManager or require("ui/uimanager")
+                uim:show(SortWidget:new{
+                    title             = title,
+                    item_table        = items,
+                    covers_fullscreen = true,
+                    callback          = function() saveOrder(items) end,
+                })
+            end,
+            sui_build = ctx.is_sui and function(ctx2, _item)
+                local SUIWindow = require("engines/sui_window")
+                return SUIWindow.ListRow{
+                    title        = title,
+                    subtitle     = function()
+                        local names = {}
+                        for _i, id in ipairs(visibleIds()) do names[#names + 1] = opts.label(id) end
+                        return #names > 0 and table.concat(names, "  ·  ") or empty_text
+                    end,
+                    inner_w      = ctx2.inner_w,
+                    item_count   = function() return #visibleIds() end,
+                    enabled      = enabled(),
+                    show_chevron = true,
+                    on_tap       = function() list.arrange(ctx2) end,
+                }
+            end or nil,
+        }
+
+        local rows = { row }
+        if not ctx.is_sui then
+            local toggle_label = opts.toggle_label or opts.label
+            for _i, id in ipairs(opts.ids) do
+                if available(id) and not anchors[id] then
+                    rows[#rows + 1] = {
+                        text           = toggle_label(id),
+                        checked_func   = function() return opts.is_visible(id) end,
+                        enabled_func   = enabled,
+                        keep_menu_open = true,
+                        callback       = function()
+                            opts.set_visible(id, not opts.is_visible(id))
+                            opts.refresh()
+                        end,
+                    }
+                end
+            end
+        end
+        return rows
+    end
+
+    return list
+end
+
 -- ===========================================================================
 -- 6. Cover Management & Caching
 -- ===========================================================================
@@ -1913,11 +2139,12 @@ M._cover_extract_pending = {}
 M._cover_extract_specs   = {}
 
 local _BookInfoManager = nil
-local _bbBytes = RasterCache.bbBytes
+local _bbBytes = Memory.bbBytes
 
 -- Listeners told when a book's record in the book info store changes:
--- fn(filepath, method). Records written by background extraction happen in a
--- separate process and are not reported.
+-- fn(filepath, method, ...), where `...` are the arguments the method was
+-- called with. Records written by background extraction happen in a separate
+-- process and are not reported.
 local _bookinfo_listeners = {}
 
 function M.onBookInfoChanged(fn)
@@ -1936,7 +2163,7 @@ local function _hookBookInfoChanges(bim)
             bim["_sui_orig_" .. name] = orig
             bim[name] = function(self, filepath, ...)
                 if filepath then
-                    for _, fn in ipairs(_bookinfo_listeners) do fn(filepath, name) end
+                    for _, fn in ipairs(_bookinfo_listeners) do fn(filepath, name, ...) end
                 end
                 return orig(self, filepath, ...)
             end
@@ -1945,10 +2172,13 @@ local function _hookBookInfoChanges(bim)
     return bim
 end
 
--- The store forgetting a book (cover or metadata changes, manual refresh)
--- invalidates the cover state cached here.
-M.onBookInfoChanged(function(filepath, method)
-    if method == "deleteBookInfo" then M.dropCoverCaches(filepath) end
+-- The store forgetting a book (cover or metadata changes, manual refresh), or
+-- the cover being ignored or restored, invalidates the cover state cached here.
+M.onBookInfoChanged(function(filepath, method, props)
+    if method == "deleteBookInfo"
+            or (method == "setBookInfoProperties" and props and props.ignore_cover ~= nil) then
+        M.dropCoverCaches(filepath)
+    end
 end)
 
 function M.getBookInfoManager()
@@ -1975,8 +2205,7 @@ end
 -- very different sizes. Entries here are just filepath strings — tiny and
 -- roughly uniform — so a simple count cap is the right unit.
 local _NO_COVER_MAX_ENTRIES = 2000
-local _no_cover_probe = {}   -- filepath -> true
-local _no_cover_order = {}   -- filepaths, oldest at front, MRU at back
+local _no_cover = LRU.new{ max_entries = _NO_COVER_MAX_ENTRIES }   -- filepath -> true
 local _RenderImage = nil
 local _lfs_cover   = nil  -- lazy-loaded lfs for filepath validation
 
@@ -1991,24 +2220,15 @@ end
 
 -- isCoverMissing(filepath) is queried from both cover APIs below on every
 -- request, so it must be a plain, correct membership test.
-function M.isCoverMissing(filepath) return _no_cover_probe[filepath] == true end
+function M.isCoverMissing(filepath) return _no_cover:has(filepath) end
 
 local function _markNoCover(filepath)
-    if _no_cover_probe[filepath] then return end
-    _no_cover_probe[filepath] = true
-    _no_cover_order[#_no_cover_order + 1] = filepath
-    if #_no_cover_order > _NO_COVER_MAX_ENTRIES then
-        local oldest = table.remove(_no_cover_order, 1)
-        _no_cover_probe[oldest] = nil
-    end
+    if _no_cover:has(filepath) then return end
+    _no_cover:put(filepath, true)
 end
 
 local function _unmarkNoCover(filepath)
-    if not _no_cover_probe[filepath] then return end
-    _no_cover_probe[filepath] = nil
-    for i, k in ipairs(_no_cover_order) do
-        if k == filepath then table.remove(_no_cover_order, i); break end
-    end
+    _no_cover:remove(filepath)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2039,29 +2259,13 @@ end
 -- visible in several crop-shaped slots only pays that decode/downscale
 -- once per session, not once per slot.
 -- ---------------------------------------------------------------------------
-local _REF_MAX_DIM     = 480               -- long-side cap in px; plenty for any on-screen slot
-local _REF_BYTE_BUDGET = 4 * 1024 * 1024   -- small: bounded per-entry size, few concurrent books need it
-local _bim_ref_cache = {}   -- filepath -> { bb, bytes }
-local _bim_ref_order = {}   -- filepaths, oldest at front, MRU at back
-local _bim_ref_bytes = 0
+local _REF_MAX_DIM = 480   -- long-side cap in px; plenty for any on-screen slot
 
-local function _removeRefOrderKey(key)
-    for i, k in ipairs(_bim_ref_order) do
-        if k == key then table.remove(_bim_ref_order, i); return end
-    end
-end
-
-local function _evictRefIfNeeded()
-    while #_bim_ref_order > 1 and _bim_ref_bytes > _REF_BYTE_BUDGET do
-        local key = table.remove(_bim_ref_order, 1)
-        local entry = _bim_ref_cache[key]
-        _bim_ref_cache[key] = nil
-        if entry then
-            _bim_ref_bytes = _bim_ref_bytes - (entry.bytes or 0)
-            if _bim_ref_bytes < 0 then _bim_ref_bytes = 0 end
-        end
-    end
-end
+-- filepath -> reference bb. Small budget: bounded per-entry size, few
+-- concurrent books need it. A reference bb can be handed back to a caller
+-- when it cannot be scaled further, so evicted entries are dereferenced, not
+-- freed.
+local _ref_cache = LRU.new{ max_bytes = Memory.budgets().ref }
 
 local function _ensureRenderImage()
     if not _RenderImage then
@@ -2071,23 +2275,13 @@ local function _ensureRenderImage()
     return _RenderImage
 end
 
--- Returns the cached reference bb for `filepath` (refreshing its LRU
--- position), or nil on a miss.
-local function _cachedRefCoverBB(filepath)
-    local cached = _bim_ref_cache[filepath]
-    if not cached then return nil end
-    _removeRefOrderKey(filepath)
-    _bim_ref_order[#_bim_ref_order + 1] = filepath
-    return cached.bb
-end
-
 -- Returns a bb that's safe to use as _scaleBBToSlot's source for `filepath`:
 -- the raw bb itself when it's already small (no point caching a second copy
 -- no bigger than the reference would be), or a cached downscaled copy
 -- otherwise. Never crops -- only ever a uniform scale-to-fit within
 -- _REF_MAX_DIM -- so the result stays a valid source for ANY target shape.
 local function _getRefCoverBB(filepath, raw_bb)
-    local cached = _cachedRefCoverBB(filepath)
+    local cached = _ref_cache:get(filepath)
     if cached then return cached end
 
     local src_w, src_h = raw_bb:getWidth(), raw_bb:getHeight()
@@ -2114,12 +2308,7 @@ local function _getRefCoverBB(filepath, raw_bb)
     if ref_bb ~= cp_bb then pcall(cp_bb.free, cp_bb) end
     if not (ok_sc and ref_bb) then return raw_bb end
 
-    local nbytes = _bbBytes(ref_bb)
-    _bim_ref_cache[filepath] = { bb = ref_bb, bytes = nbytes }
-    _bim_ref_order[#_bim_ref_order + 1] = filepath
-    _bim_ref_bytes = _bim_ref_bytes + nbytes
-    _evictRefIfNeeded()
-    return ref_bb
+    return _ref_cache:put(filepath, ref_bb, _bbBytes(ref_bb))
 end
 
 local function _scaleBBToSlot(bb, target_w, target_h, align)
@@ -2256,68 +2445,28 @@ end
 -- slot shape (width, height, alignment). Slots are small, so a few MiB hold
 -- every visible peek and Quad quadrant. Entries are shared with live
 -- ImageWidgets (image_disposable = false), so evicting only drops the
--- reference and never frees the buffer.
-local _CROP_BYTE_BUDGET = 4 * 1024 * 1024
-local _crop_cache = {}   -- filepath -> { [slot_key] = { bb, bytes, tick } }
-local _crop_bytes = 0
-local _crop_tick  = 0
+-- reference and never frees the buffer. Scoped by file path, so one call
+-- drops every slot of a book.
+local _crop_cache = LRU.new{ max_bytes = Memory.budgets().crop }
 
 local function _cropSlotKey(w, h, align)
     return w .. "x" .. h .. (align or "")
 end
 
 local function _cropGet(filepath, slot_key)
-    local entry = _crop_cache[filepath] and _crop_cache[filepath][slot_key]
-    if not entry then return nil end
-    _crop_tick = _crop_tick + 1
-    entry.tick = _crop_tick
-    return entry.bb
-end
-
-local function _cropEvictOverBudget(keep)
-    while _crop_bytes > _CROP_BYTE_BUDGET do
-        local oldest, oldest_fp, oldest_key
-        for fp, slots in pairs(_crop_cache) do
-            for key, entry in pairs(slots) do
-                if entry ~= keep and (not oldest or entry.tick < oldest.tick) then
-                    oldest, oldest_fp, oldest_key = entry, fp, key
-                end
-            end
-        end
-        if not oldest then return end
-        _crop_bytes = _crop_bytes - oldest.bytes
-        _crop_cache[oldest_fp][oldest_key] = nil
-        if next(_crop_cache[oldest_fp]) == nil then _crop_cache[oldest_fp] = nil end
-    end
+    return _crop_cache:get(slot_key, filepath)
 end
 
 local function _cropPut(filepath, slot_key, bb)
-    _crop_tick = _crop_tick + 1
-    local entry = { bb = bb, bytes = _bbBytes(bb), tick = _crop_tick }
-    _crop_cache[filepath] = _crop_cache[filepath] or {}
-    _crop_cache[filepath][slot_key] = entry
-    _crop_bytes = _crop_bytes + entry.bytes
-    _cropEvictOverBudget(entry)
-end
-
-local function _cropDrop(filepath)
-    local slots = _crop_cache[filepath]
-    if not slots then return end
-    for _, entry in pairs(slots) do _crop_bytes = _crop_bytes - entry.bytes end
-    _crop_cache[filepath] = nil
+    _crop_cache:put(slot_key, bb, _bbBytes(bb), filepath)
 end
 
 -- Drop stretch, crop and ref entries so a later put after re-extract can install the
 -- higher-quality bb (prefer-larger alone keeps same pixel-count upscales).
 local function _dropLocalCoverCaches(filepath)
     SUICoverCache:drop(filepath)
-    _cropDrop(filepath)
-    local entry = _bim_ref_cache[filepath]
-    if not entry then return end
-    _removeRefOrderKey(filepath)
-    _bim_ref_cache[filepath] = nil
-    _bim_ref_bytes = _bim_ref_bytes - (entry.bytes or 0)
-    if _bim_ref_bytes < 0 then _bim_ref_bytes = 0 end
+    _crop_cache:removeScope(filepath)
+    _ref_cache:remove(filepath)
 end
 
 -- Forgets all locally cached cover state for one book (stretched bitmap,
@@ -2387,6 +2536,12 @@ local function _getCoverInfo(bim, filepath, w, h)
     return nil
 end
 
+-- True when the record holds a cover that may be shown: the book has one and
+-- the user has not chosen to ignore it.
+local function _hasShowableCover(bookinfo)
+    return bookinfo.has_cover and not bookinfo.ignore_cover
+end
+
 function M.getStretchedCoverBB(filepath, w, h)
     if M.isCoverMissing(filepath) then return nil end
 
@@ -2397,7 +2552,7 @@ function M.getStretchedCoverBB(filepath, w, h)
     if not bim then return nil end
     local bookinfo = _getCoverInfo(bim, filepath, w, h)
     if not bookinfo then return nil end
-    if not bookinfo.has_cover then return _noCover(filepath) end
+    if not _hasShowableCover(bookinfo) then return _noCover(filepath) end
 
     -- Undersized book info thumbnail: serve a stretched placeholder and
     -- re-extract larger. Local caches are dropped so the upgraded bitmap can
@@ -2425,6 +2580,12 @@ function M.getStretchedCoverBB(filepath, w, h)
     return SUICoverCache:put(filepath, _stretchBBToSize(raw_bb, w, h))
 end
 
+-- Revision of the stretched cover cached for `filepath`: stable while the
+-- cover is only enlarged, different once another cover replaces it.
+function M.getCoverRevision(filepath)
+    return SUICoverCache:revision(filepath)
+end
+
 function M.getCroppedCoverBB(filepath, w, h, align)
     if M.isCoverMissing(filepath) then return nil end
 
@@ -2434,7 +2595,7 @@ function M.getCroppedCoverBB(filepath, w, h, align)
     if not bim then return nil end
     local bookinfo = _getCoverInfo(bim, filepath, w, h)
     if not bookinfo then return nil end
-    if not bookinfo.has_cover then return _noCover(filepath) end
+    if not _hasShowableCover(bookinfo) then return _noCover(filepath) end
 
     if _coverTooSmall(bim, bookinfo, w, h) then
         _dropLocalCoverCaches(filepath)
@@ -2451,7 +2612,7 @@ function M.getCroppedCoverBB(filepath, w, h, align)
     if cropped then return cropped end
 
     -- Shared uncropped ref; each slot shape is cropped from it once.
-    local ref_bb = _cachedRefCoverBB(filepath)
+    local ref_bb = _ref_cache:get(filepath)
     if not ref_bb then
         local raw_bb = _loadCoverBB(bim, filepath)
         if not raw_bb then return _noCover(filepath) end
@@ -2465,37 +2626,14 @@ function M.getCroppedCoverBB(filepath, w, h, align)
 end
 
 function M.clearCoverCache()
-    -- Stretch-only cache (infra/sui_cover_cache.lua) — cheap, unconditional:
-    -- clear()'s own contract is already "drop references, don't free()"
-    -- (see that module), so no deferred-sweep coordination is needed here.
+    -- Every cover cache drops its references and reports the released bytes
+    -- to infra/sui_memory.lua; widgets may still hold some of these buffers,
+    -- so none is freed explicitly.
     SUICoverCache:clear()
-    _crop_cache, _crop_bytes = {}, 0
-
-    -- No-cover probes hold no bb payload (just filepath markers) — nothing
-    -- to free, reset synchronously.
-    _no_cover_probe = {}
-    _no_cover_order = {}
-
-    -- Reference cover cache (backs Config.getCroppedCoverBB) is the only
-    -- remaining table here that holds real blitbuffers. It's never handed
-    -- to any ImageWidget outside this module (see _getRefCoverBB) — it only
-    -- ever serves as _scaleBBToSlot's source, and that call already
-    -- copies/crops the pixels it needs before returning, so nothing outside
-    -- holds a reference to these entries. Safe to free on a deferred sweep.
-    if next(_bim_ref_cache) == nil then return end
-
-    local to_free = _bim_ref_cache
-    _bim_ref_cache = {}; _bim_ref_order = {}; _bim_ref_bytes = 0
+    _crop_cache:clear()
+    _ref_cache:clear()
+    _no_cover:clear()
     _RenderImage = nil
-
-    local UIManager = require("ui/uimanager")
-    local function freeNext()
-        local k, entry = next(to_free)
-        if not k then return end
-        pcall(function() entry.bb:free() end); to_free[k] = nil
-        if next(to_free) then UIManager:scheduleIn(0.1, freeNext) end
-    end
-    UIManager:scheduleIn(0.1, freeNext)
 end
 
 function M.flushCoverQueue()
@@ -2701,6 +2839,7 @@ end
 
 -- Navpager
 function M.isNavpagerEnabled() return SUISettings:isTrue("simpleui_bar_navpager_enabled") end
+
 function M.isDotPagerEnabled() return SUISettings:nilOrTrue("simpleui_bar_dotpager_always") end
 function M.effectiveMaxTabs() return M.isNavpagerEnabled() and M.MAX_TABS_NAVPAGER or M.MAX_TABS end
 
@@ -2876,6 +3015,7 @@ function M.applyFirstRunDefaults()
     def(PFX .. "currently_show_title",         true)
     def(PFX .. "currently_show_author",        true)
     def(PFX .. "currently_show_progress",      true)
+    def(PFX .. "currently_show_stats",         true)
     def(PFX .. "currently_show_percent",       false)
     def(PFX .. "currently_show_book_days",     true)
     def(PFX .. "currently_show_book_time",     true)
@@ -2891,7 +3031,7 @@ function M.applyFirstRunDefaults()
     def(PFX .. "coverdeck_show_book_days",      false)
     def(PFX .. "coverdeck_show_book_time",      false)
     def(PFX .. "coverdeck_show_book_remaining", false)
-    def(PFX .. "coverdeck_show_stats",          true)  -- was previously undefaulted; relied silently on nilOrTrue's true fallback
+    def(PFX .. "coverdeck_show_stats",          true)
     def(PFX .. "recent_show_finished",          true)
 
     -- Updater
@@ -2936,8 +3076,11 @@ function M.applyFirstRunDefaults()
     def("simpleui_qs_bar_frontlight",       false)
     def("simpleui_qs_bar_warmth",           false)
     def("simpleui_qs_bar_shape",            "round")
-    def("simpleui_qs_bar_bg",              "flat")
     def("simpleui_qs_bar_settings_on_hold", true)
+    def("simpleui_qs_bar_open_reader",      true)
+    def("simpleui_qs_bar_open_fm",          true)
+    def("simpleui_qs_bar_reader_layout",    "book")
+    def("simpleui_qs_bar_slider_style",     "bar")
     def("simpleui_qs_bar_slots",            { "wifi_toggle", "bookmark_browser", "frontlight", "night_mode", "power", "sui_settings" })
 
     SUISettings:flush()

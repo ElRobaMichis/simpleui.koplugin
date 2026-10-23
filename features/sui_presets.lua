@@ -35,6 +35,7 @@
 
 local SUISettings = require("infra/sui_store")
 local logger      = require("logger")
+local util = require("util")
 local _           = require("infra/sui_i18n").translate
 
 -- ============================================================================
@@ -55,9 +56,17 @@ local HS_EXACT = {
     ["simpleui_statusbar_transparent"]        = true,
     ["simpleui_navbar_transparent"]           = true,
     ["simpleui_statusbar_backdrop"]           = true,
+    ["simpleui_statusbar_tone"]               = true,
+    ["simpleui_statusbar_show_frame"]         = true,
     ["simpleui_navbar_backdrop"]              = true,
+    ["simpleui_navbar_tone"]                  = true,
+    ["simpleui_navbar_show_frame"]            = true,
     ["simpleui_pagination_backdrop"]          = true,
+    ["simpleui_pagination_tone"]              = true,
+    ["simpleui_pagination_show_frame"]        = true,
     ["simpleui_titlebar_backdrop"]            = true,
+    ["simpleui_titlebar_tone"]                = true,
+    ["simpleui_titlebar_show_frame"]          = true,
     ["simpleui_module_backdrop"]              = true,
     ["simpleui_wallpaper_show_in_fm"]         = true,  -- "show wallpaper in file manager" toggle
     ["simpleui_reading_goals_show_annual"]    = true,
@@ -65,13 +74,19 @@ local HS_EXACT = {
     ["simpleui_reading_goals_show_daily"]     = true,
     ["simpleui_reading_goals_layout"]         = true,
     ["simpleui_reading_goals_ring_style"]     = true,
-    ["simpleui_qa_row_instances"]             = true,
-    ["simpleui_spacer_row_instances"]         = true,
 }
+
+-- Whether `key` persists a module instance list (owned by the registry).
+local function _isInstanceListKey(key)
+    for _i, instance_key in ipairs(require("modules/moduleregistry").getInstanceKeys()) do
+        if key == instance_key then return true end
+    end
+    return false
+end
 
 local function _hsMatchesKey(key)
     if type(key) ~= "string" then return false end
-    if HS_EXACT[key] then return true end
+    if HS_EXACT[key] or _isInstanceListKey(key) then return true end
     for _i, pfx in ipairs(HS_PREFIXES) do
         if key:sub(1, #pfx) == pfx then
             if key == HS_PRESET_KEY then return false end
@@ -140,13 +155,15 @@ local BUILTIN_PRESETS = {
     {
         id = "builtin_at_a_glance",
         name = _("At a Glance"),
-        desc = _("Currently Reading") .. ", " .. _("Recent Books"),
-        layout = { pages = { { id = 1, modules = { "currently", "recent" } } } },
+        desc = _("Currently Reading") .. ", " .. _("Tabbed Grid"),
+        layout = { pages = { { id = 1, modules = { "currently", "tab_grid_glance" } } } },
         settings = {
-            -- Both "currently" and "recent" are deliberately left unconfigured
-            -- here — they render with whatever sui_config.lua's
-            -- applyFirstRunDefaults() (or the user's own customization, if
-            -- any) currently defines.
+            -- Deterministic instance of the tabbed grid (4 cols × 1 row).
+            -- "currently" is left unconfigured so it follows
+            -- applyFirstRunDefaults() or the user's own customization.
+            simpleui_tab_grid_instances = { "tab_grid_glance" },
+            simpleui_hs_tab_grid_glance_grid_rows = 1,
+            simpleui_hs_tab_grid_glance_grid_cols = 4,
         }
     },
     {
@@ -320,8 +337,7 @@ function SUIPresets.applyBuiltin(id)
     -- then repopulates the keys it explicitly tracks — it's idempotent, so
     -- it only fills what was just cleared. Any module-owned key with no
     -- entry there simply reads back as nil, and per-module getters already
-    -- fall back to their own local default in that case. bp.settings is
-    -- applied afterwards, on top, so preset-specific values still win.
+    -- fall back to their own local default in that case.
     local to_delete = {}
     for k in SUISettings:iterateKeys() do
         if _hsMatchesKey(k) then to_delete[#to_delete + 1] = k end
@@ -330,6 +346,15 @@ function SUIPresets.applyBuiltin(id)
     require("infra/sui_config").applyFirstRunDefaults()
 
     SUISettings:set("simpleui_layout", bp.layout)
+
+    -- Preset settings (including instance lists and per-instance keys) are
+    -- written before the registry is consulted so instanciable modules are
+    -- materialised for the enable/order pass.
+    if bp.settings then
+        for k, v in pairs(bp.settings) do
+            SUISettings:set(k, v)
+        end
+    end
 
     local active_set = {}
     local function entry_id(entry)
@@ -344,6 +369,7 @@ function SUIPresets.applyBuiltin(id)
     end
 
     local Registry = require("modules/moduleregistry")
+    Registry.invalidate()
     local flat_order = {}
     for _, page in ipairs(bp.layout.pages) do
         for _, entry in ipairs(page.modules) do
@@ -359,11 +385,6 @@ function SUIPresets.applyBuiltin(id)
     end
     SUISettings:set("simpleui_hs_module_order", flat_order)
 
-    if bp.settings then
-        for k, v in pairs(bp.settings) do
-            SUISettings:set(k, v)
-        end
-    end
     SUISettings:flush()
     return true
 end
@@ -865,7 +886,7 @@ function SUIPresets.makeMenuItems(opts)
                         is_enter_default = true,
                         callback         = function()
                             local name = dialog:getInputText()
-                            name = name and name:match("^%s*(.-)%s*$") or ""
+                            name = name and util.trim(name) or ""
                             if name == "" then
                                 UI.Notify.toast(_("Please enter a name for the preset."), 2)
                                 return
@@ -936,7 +957,7 @@ function SUIPresets.makeMenuItems(opts)
                                         { text = _("Cancel"), id = "close", callback = function() closeDialog(d) end },
                                         { text = _("Rename"), is_enter_default = true, callback = function()
                                             local new_name = d:getInputText()
-                                            new_name = new_name and new_name:match("^%s*(.-)%s*$") or ""
+                                            new_name = new_name and util.trim(new_name) or ""
                                             if new_name == "" or new_name == _name then closeDialog(d); return end
                                             if isBuiltinName(new_name) then
                                                 UI.Notify.toast(_("This name is reserved by a built-in preset."), 2)
@@ -1022,7 +1043,7 @@ function SUIPresets.makeMenuItems(opts)
                                                                 { text = _("Cancel"), id = "close", callback = function() closeDialog(d) end },
                                                                 { text = _("Rename"), is_enter_default = true, callback = function()
                                                                     local new_name = d:getInputText()
-                                                                    new_name = new_name and new_name:match("^%s*(.-)%s*$") or ""
+                                                                    new_name = new_name and util.trim(new_name) or ""
                                                                     if new_name == "" or new_name == _name then closeDialog(d); return end
                                                             if isBuiltinName(new_name) then
                                                                 UI.Notify.toast(_("This name is reserved by a built-in preset."), 2)

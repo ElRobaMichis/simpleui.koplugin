@@ -54,6 +54,7 @@
 local Device      = require("device")
 local Geom        = require("ui/geometry")
 local UIManager   = require("ui/uimanager")
+local util        = require("util")
 local UI         = require("infra/sui_core")
 local _           = require("infra/sui_i18n").translate
 
@@ -64,7 +65,6 @@ local SUISettings = require("infra/sui_store")
 
 local SortWidget  = require("ui/widget/sortwidget")
 local ButtonDialog = require("ui/widget/buttondialog")
-local logger      = require("logger")
 
 local SettingsWindow = {}
 
@@ -231,22 +231,10 @@ end
 function LayoutService.getModuleName(mod_id)
     local mod = Registry.get(mod_id)
     local mod_name = mod and mod.name or mod_id
-    if type(mod_id) == "string" and mod_id:match("_row_") then
-        -- Find position across all instanciable base keys.
-        local inst_keys = {
-            "simpleui_qa_row_instances",
-            "simpleui_spacer_row_instances",
-        }
-        for _, key in ipairs(inst_keys) do
-            local inst_ids = SUISettings:readSetting(key) or {}
-            if #inst_ids > 1 then
-                for idx, mid in ipairs(inst_ids) do
-                    if mid == mod_id then
-                        return mod_name .. " " .. idx
-                    end
-                end
-            end
-        end
+    -- Instances are numbered by creation order once there is more than one.
+    local idx, count = Registry.getInstanceIndex(mod_id)
+    if idx and count > 1 then
+        return mod_name .. " " .. idx
     end
     return mod_name
 end
@@ -352,6 +340,7 @@ local function buildScreens(st)
         return {
             SUI.ListRow{
                 title        = _("Home Screen"),
+                left_icon    = "home",
                 subtitle     = _("Layout, wallpaper, presets and behaviour"),
                 inner_w      = iw,
                 show_chevron = true,
@@ -359,6 +348,7 @@ local function buildScreens(st)
             },
             SUI.ListRow{
                 title        = _("Bars"),
+                left_icon    = "bars",
                 subtitle     = _("Status, title, navigation and pagination"),
                 inner_w      = iw,
                 show_chevron = true,
@@ -366,6 +356,7 @@ local function buildScreens(st)
             },
             SUI.ListRow{
                 title        = _("Library"),
+                left_icon    = "library",
                 subtitle     = _("Book-browser settings"),
                 inner_w      = iw,
                 show_chevron = true,
@@ -373,6 +364,7 @@ local function buildScreens(st)
             },
             SUI.ListRow{
                 title        = _("Style"),
+                left_icon    = "style",
                 subtitle     = _("Icons, fonts and appearance"),
                 inner_w      = iw,
                 show_chevron = true,
@@ -380,6 +372,7 @@ local function buildScreens(st)
             },
             SUI.ListRow{
                 title        = _("Quick Actions"),
+                left_icon    = "quick_actions",
                 subtitle     = _("Global custom actions & icons"),
                 inner_w      = iw,
                 show_chevron = true,
@@ -394,6 +387,7 @@ local function buildScreens(st)
             },
             SUI.ListRow{
                 title        = _("About"),
+                left_icon    = "info",
                 subtitle     = _("Version, author and updates"),
                 inner_w      = iw,
                 show_chevron = true,
@@ -555,7 +549,7 @@ local function buildScreens(st)
                                 is_enter_default = true,
                                 callback         = function()
                                     local name = dialog:getInputText()
-                                    name = name and name:match("^%s*(.-)%s*$") or ""
+                                    name = name and util.trim(name) or ""
                                     UIManager:close(dialog)
                                     if name ~= "" then
                                         CustomScreens.rename(_screen.id, name)
@@ -681,63 +675,11 @@ local function buildScreens(st)
         local page = st.layout.pages[st.current_page]
         if not page then return items end
 
-        -- Build a positional number for each _row_ instance based on creation
-        -- order, using the persisted instance list as the source of truth.
-        -- Moving rows in the layout does not change their number; only deletion
-        -- reindexes (destroyInstance already removes from the persisted list,
-        -- so the next repaint reflects the new numbers automatically).
-        local row_counters = {}
-        local qa_inst_ids = SUISettings:readSetting("simpleui_qa_row_instances") or {}
-        for idx, mid in ipairs(qa_inst_ids) do
-            row_counters[mid] = { idx = idx, kind = "qa" }
-        end
-        local spacer_inst_ids = SUISettings:readSetting("simpleui_spacer_row_instances") or {}
-        for idx, mid in ipairs(spacer_inst_ids) do
-            row_counters[mid] = { idx = idx, kind = "spacer" }
-        end
-
         for m_idx, entry in ipairs(page.modules) do
             local mod_id       = LayoutService.entryId(entry)
             local mod_name     = LayoutService.getModuleName(mod_id)
-            local mod_subtitle = nil
-
-            if row_counters[mod_id] then
-                local entry = row_counters[mod_id]
-                if entry.kind == "spacer" then
-                    local ok_cfg, Config2 = pcall(require, "infra/sui_config")
-                    if ok_cfg and Config2 then
-                        local pct = Config2.getModuleScalePct(mod_id, st.pfx)
-                        mod_subtitle = pct .. "%"
-                    end
-                else
-                    local items_key = st.pfx_qa .. mod_id .. "_items"
-                    local qa_ids = SUISettings:readSetting(items_key) or {}
-                    if #qa_ids > 0 then
-                        local ok_qa, QA = pcall(require, "features/sui_quickactions")
-                        if ok_qa and QA and QA.getEntry then
-                            local names = {}
-                            for _, qa_id in ipairs(qa_ids) do
-                                local entry2 = QA.getEntry(qa_id)
-                                table.insert(names, entry2 and entry2.label or qa_id)
-                            end
-                            mod_subtitle = table.concat(names, "  ·  ")
-                        end
-                    end
-                    if not mod_subtitle or mod_subtitle == "" then mod_subtitle = _("No actions configured") end
-                end
-            end
-
-            -- Featured Collection instances: shows the assigned collection as a
-            -- subtitle (e.g. "test"), to distinguish instances in the page's
-            -- module list without having to open each one.
-            if type(mod_id) == "string" and mod_id:match("^coll_row_") then
-                local coll_name = SUISettings:readSetting(st.pfx .. mod_id .. "_coll_name")
-                if coll_name and coll_name ~= "" then
-                    mod_subtitle = coll_name
-                else
-                    mod_subtitle = _("No collection selected")
-                end
-            end
+            -- Instances summarise their own configuration (nil for the rest).
+            local mod_subtitle = Registry.getInstanceSubtitle(mod_id, st.pfx, st.pfx_qa)
 
             table.insert(items, {
                 text         = mod_name,
@@ -760,7 +702,7 @@ local function buildScreens(st)
                                 end
                             end
                             -- If this is a dynamic instance, destroy it and purge its settings.
-                            if mod_id:match("_row_") then
+                            if Registry.isInstance(mod_id) then
                                 Registry.purgeInstanceSettings(mod_id, st.pfx)
                                 Registry.destroyInstance(mod_id)
                             end
@@ -842,23 +784,10 @@ local function buildScreens(st)
             end
         end
 
-        local all_mods = Registry.list()
-        logger.dbg("simpleui: buildModulePicker: Registry.list() count =", #all_mods)
-        local active_count = 0
-        for k, _ in pairs(active_set) do active_count = active_count + 1 end
-        logger.dbg("simpleui: buildModulePicker: active_set count =", active_count)
-        for k, _ in pairs(active_set) do logger.dbg("  active:", k) end
-        for _, mod in ipairs(all_mods) do
-            local is_inst = mod.id:match("_row_") ~= nil
-            logger.dbg("  mod:", mod.id, "is_instance:", is_inst, "in_active:", active_set[mod.id] ~= nil)
-        end
-        logger.dbg("simpleui: isInstanciable(quick_actions_row) =", Registry.isInstanciable("quick_actions_row"))
-
         -- Singleton modules: show only those not yet in the layout,
-        -- and skip instances of instanciable modules (they have "_row_" in their id).
+        -- and skip instances of instanciable modules.
         for _, mod in ipairs(Registry.list()) do
-            local is_instance = mod.id:match("_row_") ~= nil
-            if not active_set[mod.id] and not is_instance then
+            if not active_set[mod.id] and not Registry.isInstance(mod.id) then
                 local _mod_id = mod.id
                 table.insert(items, SUI.ListRow{
                     title   = mod.name,
@@ -874,24 +803,20 @@ local function buildScreens(st)
 
         -- Instanciable modules: always show an "Add" entry regardless of
         -- how many instances already exist in the layout.
-        local instanciable_bases = { "quick_actions_row", "spacer_row", "coll_row" }
-        for _i, base_id in ipairs(instanciable_bases) do
-            if Registry.isInstanciable(base_id) then
-                local base_mod = Registry.getBase(base_id)
-                local base_name = (base_mod and base_mod.name) or base_id
-                table.insert(items, SUI.ListRow{
-                    title    = base_name,
-                    inner_w  = iw,
-                    on_tap   = function()
-                        local new_id = Registry.createInstance(base_id)
-                        if new_id then
-                            table.insert(st.layout.pages[st.current_page].modules, new_id)
-                            LayoutService.save(st.layout, st.pfx, st.layout_key, st.screen_id)
-                        end
-                        ctx.pop()
-                    end,
-                })
-            end
+        for _i, base_id in ipairs(Registry.getInstanciableBaseIds()) do
+            local base_mod = Registry.getBase(base_id)
+            table.insert(items, SUI.ListRow{
+                title    = (base_mod and base_mod.name) or base_id,
+                inner_w  = iw,
+                on_tap   = function()
+                    local new_id = Registry.createInstance(base_id)
+                    if new_id then
+                        table.insert(st.layout.pages[st.current_page].modules, new_id)
+                        LayoutService.save(st.layout, st.pfx, st.layout_key, st.screen_id)
+                    end
+                    ctx.pop()
+                end,
+            })
         end
 
         if #items == 0 then
@@ -1219,6 +1144,7 @@ function SettingsWindow:show(on_close, nav_path)
     local Config = require("infra/sui_config")
     local win = SUI:new{
         name           = "sui_win_settings",
+        icon           = "settings",
         screens        = screens,
         screen_titles  = titles,
         navpager_mode  = Config.isNavpagerEnabled(),
@@ -1249,7 +1175,7 @@ function SettingsWindow:show(on_close, nav_path)
                                     is_enter_default = true,
                                     callback         = function()
                                         local name = dialog:getInputText()
-                                        name = name and name:match("^%s*(.-)%s*$") or ""
+                                        name = name and util.trim(name) or ""
                                         UIManager:close(dialog)
                                         CustomScreens.create(name ~= "" and name or nil)
                                         ctx.repaint()
@@ -1283,20 +1209,14 @@ function SettingsWindow:show(on_close, nav_path)
                 local all_mods = Registry.list()
                 local available = false
                 for _, mod in ipairs(all_mods) do
-                    local is_instance = mod.id:match("_row_") ~= nil
-                    if not active_set[mod.id] and not is_instance then
+                    if not active_set[mod.id] and not Registry.isInstance(mod.id) then
                         available = true
                         break
                     end
                 end
+                -- An instanciable module can always be added once more.
                 if not available then
-                    local instanciable_bases = { "quick_actions_row", "spacer_row", "coll_row" }
-                    for _i, base_id in ipairs(instanciable_bases) do
-                        if Registry.isInstanciable(base_id) then
-                            available = true
-                            break
-                        end
-                    end
+                    available = #Registry.getInstanciableBaseIds() > 0
                 end
 
                 return SUI.CenteredButtonFooter(ctx, {

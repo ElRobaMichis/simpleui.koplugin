@@ -41,11 +41,13 @@
 --   M.getSavedMode() / M.setSavedMode(mode)
 --   M.openVirtualCoverPicker(vpath, fc)
 --   M.getAuthorBookCount(fc, author)    — count books by author in current base_dir (cached)
---   M.navigateToAuthorLeaf(fm, author)  — navigate FM directly to author virtual leaf
+--   M.navigateToLeaf(fm, dimension, value, opts) — navigate FM directly to a virtual leaf
 
 local lfs     = require("libs/libkoreader-lfs")
 local ffiUtil = require("ffi/util")
 local logger  = require("logger")
+local Memory  = require("infra/sui_memory")
+local Text    = require("infra/sui_text")
 local _ = require("infra/sui_i18n").translate
 local SUISettings = require("infra/sui_store")
 
@@ -347,37 +349,42 @@ function M.getAuthorBookCount(fc, author_name)
     return #MetadataSource.getValidRows(bim, base, fs, variant, accept)
 end
 
--- Navigates the FM directly to the virtual leaf for *author_name*, bypassing
--- the top-level Authors list. The up-button / back-button will land on the
--- Authors root (not the real filesystem), matching the expected UX.
+-- Navigates the FM directly to the virtual leaf of `value` in `dimension`,
+-- bypassing the top-level list of the dimension. The up button lands on that
+-- list, not on the real filesystem.
 --
--- origin_file (optional): the book file that triggered this navigation.
---   When provided, pressing back from the virtual leaf returns directly to
---   the real folder where the book lives, with the list scrolled to that
---   book. Without it, back lands on the Authors root.
+-- opts (all optional):
+--   base_dir     directory whose subtree the leaf lists; the file manager's
+--                current one by default
+--   origin_file  the book the navigation started from: going back from the
+--                leaf returns to the real folder, scrolled to that book
+--   return_fn    called when going back from the leaf, instead of returning
+--                to a real folder, for a navigation that started elsewhere
 --
 -- Preconditions: browse mode must be installed (M.install() called).
-function M.navigateToAuthorLeaf(fm, author_name, origin_file)
-    if not fm or not author_name or author_name == "" then return end
-    local fc = fm.file_chooser
-    if not fc then return end
+function M.navigateToLeaf(fm, dimension, value, opts)
+    local fc = fm and fm.file_chooser
+    if not (fc and FilterState.isDimension(dimension) and value and value ~= "") then return end
+    opts = opts or {}
 
-    local base   = VirtualPath.getBaseDir(fc.path)
-    local target = VirtualPath.buildLeaf(base, nil, "author", author_name)
+    local fc_base = VirtualPath.getBaseDir(fc.path)
+    local base    = opts.base_dir or fc_base
+    local target  = VirtualPath.buildLeaf(base, nil, dimension, value)
 
-    -- Save the origin so onFolderUp can return to exactly the right place.
-    -- Stored on fc (not a module upvalue) so it survives across module reloads.
-    if origin_file then
-        local real_path = fc.path
-        if VirtualPath.isVirtual(real_path) then real_path = base end
-        fc._sui_author_dialog_origin = { path = real_path, file = origin_file }
+    -- The origin lives on the file chooser, not in a module upvalue, so it
+    -- survives module reloads. It is bound to the leaf it was set for.
+    if opts.origin_file or opts.return_fn then
+        fc._sui_leaf_origin = {
+            leaf      = target,
+            path      = VirtualPath.isVirtual(fc.path) and fc_base or fc.path,
+            file      = opts.origin_file,
+            return_fn = opts.return_fn,
+        }
     else
-        fc._sui_author_dialog_origin = nil
+        fc._sui_leaf_origin = nil
     end
 
-    -- Set the entry path to the Authors root so the up-button hierarchy is
-    -- correct when the user did NOT come from the dialog (normal flow).
-    fc._browse_by_meta_entry_path = VirtualPath.buildDimList(base, nil, "author")
+    fc._browse_by_meta_entry_path = VirtualPath.buildDimList(base, nil, dimension)
     fm._navbar_suppress_path_change = true
     fc:changeToPath(target)
     fm._navbar_suppress_path_change = nil
@@ -387,8 +394,8 @@ function M.navigateToAuthorLeaf(fm, author_name, origin_file)
     if fc.onGotoPage then
         pcall(function() fc:onGotoPage(1) end)
     end
-    -- Persist "author" mode so the next session restores the virtual tree.
-    M.setSavedMode("author")
+    -- Persist the mode so the next session restores the virtual tree.
+    M.setSavedMode(dimension)
 end
 
 -- ---------------------------------------------------------------------------
@@ -518,11 +525,16 @@ local function _appendSubgroupFolders(fc, bim, base_dir, filter_state, collate, 
     return groups
 end
 
+-- Widest secondary text of a listed book, in characters. The list renderer
+-- sizes its right-hand column to this text and gives the title what remains,
+-- so the text has to stay short whatever the metadata holds.
+local CONTEXT_MAX_CHARS = 28
+
 -- Series label of a book: its series name followed by its index.
 local function _seriesLabel(row)
     if not row.series or row.series == "" then return nil end
-    if row.series_index then return row.series .. " #" .. tostring(row.series_index) end
-    return row.series
+    local suffix = row.series_index and (" #" .. tostring(row.series_index)) or ""
+    return Text.truncate(row.series, CONTEXT_MAX_CHARS - #suffix) .. suffix
 end
 
 -- Secondary text of a book listed in a leaf: the detail the trail leaves open.
@@ -530,8 +542,7 @@ end
 -- and once the series is fixed too only the index in it remains.
 local function _bookContext(row, selected)
     if not selected.author then
-        if not row.authors or row.authors == "" then return nil end
-        return (row.authors:gsub("\n.*", " et al."))
+        return Text.truncate(Text.formatAuthors(row.authors), CONTEXT_MAX_CHARS)
     end
     if selected.series then
         return row.series_index and "#" .. tostring(row.series_index) or nil
@@ -840,9 +851,6 @@ local function _installPatches()
             -- folder items — CoverBrowser routes those through showFileDialog
             -- instead (handled above).
             if item and item.path and item.is_virtual_meta_leaf then
-                local UIManager    = require("ui/uimanager")
-                local ButtonDialog = require("ui/widget/buttondialog")
-                local dialog
                 local folder_name = (item.text or item.path:match("([^/]+)$") or ""):gsub("/$", "")
                 local _b, filter_state = VirtualPath.parse(item.path)
                 local trail = filter_state.trail
@@ -850,40 +858,32 @@ local function _installPatches()
                 -- "no value" leaf: long-press disabled (no meaningful name).
                 if not last or last.value == false then return true end
 
-                dialog = ButtonDialog:new{
-                    title       = folder_name,
-                    title_align = "center",
-                    buttons = (function()
-                        local btns = {}
-                        -- Hide the cover picker in quad mosaic mode (the quad
-                        -- grid always auto-selects covers; single-cover
-                        -- override is not applicable in that mode).
-                        local in_list_view = fc and fc.display_mode_type == "list"
-                        local effective_style = FolderCovers.resolveStyle(fc, item.path, item)
-                        if effective_style ~= "quad" or in_list_view then
-                            btns[#btns + 1] = {{
-                                text     = _("Set folder cover"),
-                                callback = function()
-                                    UIManager:close(dialog)
-                                    M.openVirtualCoverPicker(item.path, fc)
-                                end,
-                            }}
-                        end
-                        btns[#btns + 1] = {{
-                            text     = _("Create collection"),
-                            callback = function()
-                                UIManager:close(dialog)
-                                _createCollectionFromVirtualFolder(item.path, fc)
-                            end,
-                        }}
-                        btns[#btns + 1] = {{
-                            text     = _("Cancel"),
-                            callback = function() UIManager:close(dialog) end,
-                        }}
-                        return btns
-                    end)(),
+                local items = {}
+                -- The cover picker is hidden in quad mosaic mode, where the
+                -- grid always picks covers itself.
+                local in_list_view    = fc and fc.display_mode_type == "list"
+                local effective_style = FolderCovers.resolveStyle(fc, item.path, item)
+                if effective_style ~= "quad" or in_list_view then
+                    items[#items + 1] = {
+                        text     = _("Set folder cover"),
+                        sui_icon = "cover",
+                        callback = function() M.openVirtualCoverPicker(item.path, fc) end,
+                    }
+                end
+                items[#items + 1] = {
+                    text     = _("Create collection"),
+                    sui_icon = "collections",
+                    callback = function() _createCollectionFromVirtualFolder(item.path, fc) end,
                 }
-                UIManager:show(dialog)
+
+                local ActionSheet = require("engines/sui_action_sheet")
+                ActionSheet.show{
+                    name       = "sui_win_virtual_folder_actions",
+                    title      = folder_name,
+                    icon       = "folder",
+                    auto_close = true,
+                    sections   = { ActionSheet.list(items) },
+                }
                 return true
             end
             return orig(fc, item)
@@ -1059,5 +1059,7 @@ function M.reset()
     MetadataSource.clearCache()
     _last_base_dir = nil
 end
+
+Memory.onReset(M.reset)
 
 return M
