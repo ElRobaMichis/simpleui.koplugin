@@ -810,6 +810,13 @@ function M.patchFileManagerClass(plugin)
             plugin:_registerTouchZones(this)
             Bottombar.setActiveTab(this, plugin.active_action, t)
             Bottombar.repaintBar(this)
+            -- The menu tab bar overlaps the topbar: refresh the topbar region
+            -- so nothing of the closed menu stays on screen. The box is read
+            -- lazily, once the paint pass has positioned the topbar.
+            local bar_topbar = this._navbar_topbar
+            if bar_topbar then
+                UIManager:setDirty(this, function() return "ui", bar_topbar.dimen end)
+            end
         end
 
         plugin:_registerTouchZones(fm_self)
@@ -2550,10 +2557,11 @@ local function _libraryRecalculate(menu, ...)
     end
 end
 
--- Display modes whose layout is inset, with the margin each one already
--- applies at the item area edge.
+-- Display modes hooked for the side margin, with the margin each one already
+-- applies at the item area edge. A mode without `native_margin` is hooked but
+-- never inset: the mosaic grid keeps its own margins.
 local SIDE_MARGIN_MODES = {
-    { module = "mosaicmenu", native_margin = function(menu) return menu.item_margin end },
+    { module = "mosaicmenu" },
     { module = "listmenu",   native_margin = function() return 0 end },
 }
 
@@ -2561,6 +2569,9 @@ local SIDE_MARGIN_STATE = "_simpleui_side_margin"
 
 -- Installs the side margin hooks on `DisplayMode` unless already present.
 local function _installSideMargin(DisplayMode, native_margin, owner)
+    local function inset_of(menu)
+        return native_margin and _sideInset(menu, native_margin(menu)) or 0
+    end
     local state = _acquireHooks(DisplayMode, SIDE_MARGIN_STATE, owner)
     if not state then return end
 
@@ -2571,7 +2582,7 @@ local function _installSideMargin(DisplayMode, native_margin, owner)
     -- native_margin(menu) is read after the mode has run _recalculateDimen.
     local function recalculate(menu, ...)
         orig_recalculate(menu, ...)
-        local inset = _sideInset(menu, native_margin(menu))
+        local inset = inset_of(menu)
         menu._sui_side_inset = inset
         if inset > 0 then _withInsetWidth(menu, inset, orig_recalculate, ...) end
     end
