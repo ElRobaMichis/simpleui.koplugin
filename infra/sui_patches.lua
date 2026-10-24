@@ -2233,6 +2233,21 @@ local function _refreshExposedFileManager()
     UIManager:scheduleIn(0, _refreshLiveFileChooser)
 end
 
+-- A closing screen exposes whatever fullscreen widget lies beneath it, and
+-- UIManager:close queues no refresh of its own: only the regions dirtied by
+-- other code reach the display, leaving the screen's pixels in the gaps.
+local function _closedScreenExposesWidget(widget)
+    return widget.name == "homescreen"
+end
+
+local function _refreshExposedWidget()
+    local stack = UI.getWindowStack()
+    local top = stack[#stack] and stack[#stack].widget
+    if top and top ~= liveFM() and top.covers_fullscreen and not _isReader(top) then
+        UIManager:setDirty(top, "ui")
+    end
+end
+
 -- ── close: screen reopen ────────────────────────────────────────────────────
 
 -- Shows screen `screen_id` (the built-in homescreen when nil) again, unless
@@ -2445,6 +2460,10 @@ local function registerWindowSteps()
     WindowHooks.register{
         id = "lazy_refresh", point = CLOSE, order = close.LAZY_REFRESH,
         match = _closedScreenExposesFileManager, after = _refreshExposedFileManager,
+    }
+    WindowHooks.register{
+        id = "exposed_refresh", point = CLOSE, order = close.EXPOSED_REFRESH,
+        match = _closedScreenExposesWidget, after = _refreshExposedWidget,
     }
     WindowHooks.register{
         id = "screen_reopen", point = CLOSE, order = close.REOPEN_SCREEN,
