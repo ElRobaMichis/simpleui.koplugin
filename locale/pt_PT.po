@@ -6719,7 +6719,7 @@ msgstr "Ousado. Vamos ver quanto tempo dura."
 
 #: modules/critter/reaction_lines.lua:255
 msgid "Book Day. A holiday for my favourite thing: sitting."
-msgstr "Dia do Livro. Um feriado para a minha coisa preferida: estar sentado."
+msgstr "Dia do Livro. Um feriado para a minha coisa preferida: sentar-me."
 
 #: modules/critter/reaction_lines.lua:82
 msgid "Book finished!"
@@ -7040,7 +7040,7 @@ msgstr "Nunca pensei nisso."
 
 #: modules/critter/dialog.lua:333
 msgid "I preside over a kingdom of paper."
-msgstr "Sou o rei de um reino de papel."
+msgstr "Presido um reino de papel."
 
 #: modules/critter/reaction_lines.lua:273
 msgid "I remember the day we met."
