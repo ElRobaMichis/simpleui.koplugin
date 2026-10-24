@@ -4357,6 +4357,18 @@ local function _wallpaperBg()
     return SUIWallpaper.styleGetBgWidget()
 end
 
+-- Paints the wallpaper behind the status bar and the bottom bar only, for when
+-- a bar is transparent but the wallpaper is not shown on all screens. It
+-- clears what was on screen before (closed menus, other screens) and leaves
+-- the content area to paint itself.
+local function _paintBarBands(bb, x)
+    if _wallpaperBg() or not SUIWallpaper.barsRevealWallpaper() then return end
+    local sw, sh = Screen:getWidth(), Screen:getHeight()
+    local bottom_h = Bottombar.TOTAL_H()
+    SUIWallpaper.paintEraser(bb, x, 0, sw, UI.getTopInset(), 0)
+    SUIWallpaper.paintEraser(bb, x, sh - bottom_h, sw, bottom_h, 0)
+end
+
 -- Recursively nil all COLOR_WHITE backgrounds in a widget tree.
 -- Stops at depth 12 to avoid runaway traversal.
 local function _clearWhiteBackgrounds(w, depth)
@@ -4384,7 +4396,17 @@ end
 local function _injectWallpaperIntoWidget(widget)
     if not widget then return end
     local outer = widget[1]   -- simpleui outer FrameContainer
-    if not outer or outer._sui_wallpaper_patched then return end
+    if not outer then return end
+    -- Bar bands are checked live on every paint, so a later setting change applies.
+    if not outer._sui_bands_patched then
+        outer._sui_bands_patched = true
+        local bands_pt = outer.paintTo
+        function outer:paintTo(bb, x, y)
+            _paintBarBands(bb, x)
+            bands_pt(self, bb, x, y)
+        end
+    end
+    if outer._sui_wallpaper_patched or not _wallpaperBg() then return end
     outer._sui_wallpaper_patched = true
 
     -- Clear opaque backgrounds in the widget chain.
@@ -4460,7 +4482,7 @@ function M.patchWallpaperFM(plugin)
     FileManager.paintTo = function(fm_self, bb, x, y)
         -- Only intercept the FileManager instance (not subclasses / other callers).
         local _live_bg_fm = _wallpaperBg()
-        if _live_bg_fm then _paintWallpaper(_live_bg_fm, bb, x, y) end
+        if _live_bg_fm then _paintWallpaper(_live_bg_fm, bb, x, y) else _paintBarBands(bb, x) end
         -- Call the original paintTo (WidgetContainer:paintTo).
         if orig_fm_paintTo then
             orig_fm_paintTo(fm_self, bb, x, y)
@@ -5010,7 +5032,6 @@ function M.injectWallpaperIntoFullscreenWidget(widget)
     -- Utility overlays that happen to set covers_fullscreen (SortWidget,
     -- PathChooser, etc.) must be left untouched.
     if not WALLPAPER_NAMES[widget.name] then return end
-    if not _wallpaperBg() then return end
     _injectWallpaperIntoWidget(widget)
 end
 
