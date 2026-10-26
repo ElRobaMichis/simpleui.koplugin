@@ -2483,6 +2483,18 @@ SimpleUIPlugin.addToMainMenu = function(self, menu_items)
                 },
             },
         }
+        table.insert(book_items, 1, {
+            text           = _("Fast Book Closing"),
+            help_text      = _("Keeps the Home Screen in memory while you read, so closing a book returns to it instantly instead of rebuilding it. Uses more RAM while a book is open."),
+            checked_func   = function()
+                return SUISettings:isTrue("simpleui_hs_fast_book_close")
+            end,
+            keep_menu_open = true,
+            callback       = function()
+                local on = SUISettings:isTrue("simpleui_hs_fast_book_close")
+                SUISettings:saveSetting("simpleui_hs_fast_book_close", not on)
+            end,
+        })
         local layout_items = {
             {
                 text_func = function() return _("Scale") end,

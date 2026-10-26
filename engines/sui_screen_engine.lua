@@ -196,22 +196,25 @@ local ScreenEngine = { _instance = nil, _cs_state = {} }
 -- ---------------------------------------------------------------------------
 -- Soft-park (reader round-trip optimisation)
 --
--- Internal-only kill switch — NOT a persisted SUISettings value and NOT
--- exposed in any menu. When true, ScreenWidget:onShowingReader keeps the
--- Homescreen's widget tree, bitmaps and cached state alive, hidden
--- underneath the reader, instead of tearing it all down and rebuilding
--- cold on every reader round-trip (see ScreenWidget:onShowingReader
--- below and _raiseParkedScreen in infra/sui_patches.lua). Default is
--- false (cold close); flip to true to enable soft-park.
-ScreenEngine.SOFT_PARK_ENABLED = false
+-- User setting "Fast Book Closing" (Home Screen > Behaviour > Books). When on,
+-- ScreenWidget:onShowingReader keeps the Homescreen's widget tree, bitmaps and
+-- cached state alive, hidden underneath the reader, instead of tearing it all
+-- down and rebuilding cold on every reader round-trip (see
+-- ScreenWidget:onShowingReader below and _raiseParkedScreen in
+-- infra/sui_patches.lua). Off by default (cold close).
+local KEY_SOFT_PARK = "simpleui_hs_fast_book_close"
 
--- When true (default) and SOFT_PARK_ENABLED is also true, a soft-parked
+function ScreenEngine.isSoftParkEnabled()
+    return SUISettings:isTrue(KEY_SOFT_PARK)
+end
+
+-- When true (default) and soft-park is enabled, a soft-parked
 -- Homescreen is left alive under the system ScreenSaver instead of being
 -- closed by the UIManager.show fullscreen-widget guard. On wakeup the
 -- parked instance is still under the Reader and the normal raise path
 -- works on book close. Flip to false to restore the pre-existing behaviour
 -- (HS closed on every suspend, cold rebuild on the next book close).
--- Code-only; not exposed in any menu.
+-- Code-only; not exposed in any menu. Has no effect while "Fast Book Closing" is off.
 ScreenEngine.KEEP_PARKED_ACROSS_SUSPEND = true
 
 -- The built-in Homescreen's id — the one place in this file that still
@@ -3942,7 +3945,7 @@ end
 -- when the reader gives control back — at the cost of a full rebuild (DB
 -- reconnect, cover decode, widget tree) on every reader round-trip.
 --
--- Soft-park (ScreenEngine.SOFT_PARK_ENABLED) keeps the screen alive across
+-- Soft-park (ScreenEngine.isSoftParkEnabled) keeps the screen alive across
 -- that round-trip without the downsides above: it only ever parks the
 -- Homescreen (never a Custom Screen), and only when it is the *sole* live
 -- screen at this exact moment — any other live screen is still force-
@@ -3963,11 +3966,11 @@ end
 -- and the next cold _showHSCold() still gets a warm seed instead of a cold
 -- one — unchanged from before, and still what happens whenever soft-park
 -- itself doesn't apply (Custom Screens, more than one live screen, or
--- SOFT_PARK_ENABLED = false).
+-- soft-park disabled).
 function ScreenWidget:onShowingReader()
     self.dithered = nil
 
-    if ScreenEngine.SOFT_PARK_ENABLED and self._id == _BUILTIN_ID
+    if ScreenEngine.isSoftParkEnabled() and self._id == _BUILTIN_ID
             and #ScreenEngine.liveScreenIds() == 1 then
         self._parked = true
         self:_pauseBackgroundWork()
