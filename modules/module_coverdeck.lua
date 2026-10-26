@@ -837,6 +837,7 @@ local M = {}
 
 M.id          = "coverdeck"
 M.name        = _("Cover Deck")
+M.category    = "books"
 M.label       = nil
 M.enabled_key = "coverdeck_enabled"
 M.default_on  = false
