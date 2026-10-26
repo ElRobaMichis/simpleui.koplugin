@@ -2247,8 +2247,47 @@ SimpleUIPlugin.addToMainMenu = function(self, menu_items)
             return items
         end
 
-        -- Ordered as: source → image rendering → tint → surfaces over the
-        -- wallpaper (top of the screen to bottom).
+        -- Ordered as: source → image rendering and tint → opacity of the
+        -- surfaces over the wallpaper.
+        local function imageItems()
+            return {
+                imageToggleItem(_("Stretch to fill screen"),
+                    SUIWallpaper.styleGetWallpaperStretch, SUIWallpaper.styleSetWallpaperStretch),
+                imageToggleItem(_("Auto-rotate"),
+                    SUIWallpaper.styleGetWallpaperAutoRotate, SUIWallpaper.styleSetWallpaperAutoRotate),
+                imageToggleItem(_("Invert in Night Mode"),
+                    SUIWallpaper.styleGetWallpaperInvertNight, SUIWallpaper.styleSetWallpaperInvertNight),
+                tintItem({
+                    title = _("Lighten"),
+                    info  = _("Fades the wallpaper towards white to improve text readability."),
+                    get   = SUIWallpaper.styleGetWallpaperLighten,
+                    set   = SUIWallpaper.styleSetWallpaperLighten,
+                }),
+                tintItem({
+                    title = _("Darken"),
+                    info  = _("Fades the wallpaper towards black."),
+                    get   = SUIWallpaper.styleGetWallpaperDarken,
+                    set   = SUIWallpaper.styleSetWallpaperDarken,
+                }),
+            }
+        end
+
+        local function surfaceOpacityItems()
+            return {
+                strengthItem({
+                    title         = _("Library/History/Collections"),
+                    info          = _("Scrim over the wallpaper in Library, History and Collections. 0% shows the wallpaper, 100% hides it."),
+                    get           = SUIWallpaper.getLibraryStrength,
+                    set           = SUIWallpaper.setLibraryStrength,
+                    default_value = Backdrop.STRENGTH_MAX,
+                }),
+                makeBarBackdropItem("statusbar",  ctx_menu, _("Status Bar Opacity")),
+                makeBarBackdropItem("titlebar",   ctx_menu, _("Title Bar Opacity")),
+                makeBarBackdropItem("pagination", ctx_menu, _("Pagination Bar Opacity")),
+                makeBarBackdropItem("navbar",     ctx_menu, _("Navigation Bar Opacity")),
+            }
+        end
+
         return {
             {
                 text           = _("Enable Wallpaper"),
@@ -2266,38 +2305,15 @@ SimpleUIPlugin.addToMainMenu = function(self, menu_items)
                 sub_item_table_func = selectWallpaperItems,
             },
             {
-                text           = _("Show wallpaper on all screens"),
-                checked_func   = SUIWallpaper.styleGetWallpaperShowInFM,
-                enabled_func   = SUIWallpaper.isWallpaperActive,
-                keep_menu_open = true,
-                separator      = true,
-                callback       = function()
-                    SUIWallpaper.styleSetWallpaperShowInFM(not SUIWallpaper.styleGetWallpaperShowInFM())
-                    _applyFullLayoutRefresh()
-                end,
+                text                = _("Display"),
+                enabled_func        = SUIWallpaper.styleGetWallpaperEnabled,
+                sub_item_table_func = imageItems,
             },
-            imageToggleItem(_("Stretch to fill screen"),
-                SUIWallpaper.styleGetWallpaperStretch, SUIWallpaper.styleSetWallpaperStretch),
-            imageToggleItem(_("Auto-rotate"),
-                SUIWallpaper.styleGetWallpaperAutoRotate, SUIWallpaper.styleSetWallpaperAutoRotate),
-            imageToggleItem(_("Invert in Night Mode"),
-                SUIWallpaper.styleGetWallpaperInvertNight, SUIWallpaper.styleSetWallpaperInvertNight),
-            tintItem({
-                title = _("Lighten"),
-                info  = _("Fades the wallpaper towards white to improve text readability."),
-                get   = SUIWallpaper.styleGetWallpaperLighten,
-                set   = SUIWallpaper.styleSetWallpaperLighten,
-            }),
-            tintItem({
-                title = _("Darken"),
-                info  = _("Fades the wallpaper towards black."),
-                get   = SUIWallpaper.styleGetWallpaperDarken,
-                set   = SUIWallpaper.styleSetWallpaperDarken,
-            }),
-            makeBarBackdropItem("statusbar",  ctx_menu, _("Status Bar Opacity")),
-            makeBarBackdropItem("titlebar",   ctx_menu, _("Title Bar Opacity")),
-            makeBarBackdropItem("pagination", ctx_menu, _("Pagination Bar Opacity")),
-            makeBarBackdropItem("navbar",     ctx_menu, _("Navigation Bar Opacity")),
+            {
+                text                = _("Surface Opacity"),
+                enabled_func        = SUIWallpaper.isWallpaperActive,
+                sub_item_table_func = surfaceOpacityItems,
+            },
         }
     end
     plugin.makeWallpaperMenuItems = makeWallpaperMenuItems

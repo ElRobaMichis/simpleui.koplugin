@@ -1514,18 +1514,14 @@ function ScreenWidget:_initLayout()
         content_widget,
     }
 
-    -- SUIWallpaper.styleGetBgWidget() already creates the ImageWidget with
-    -- height=sh (full screen), so when bars_transparent is active the
-    -- wallpaper automatically bleeds behind the topbar and bottombar with no
-    -- extra work needed here.  We just paint it at (x, y) as usual.
+    -- The wallpaper raster is screen-sized, so when the bars are transparent
+    -- it bleeds behind the topbar and bottombar with no extra work needed here.
     if _lf_bg then
         local _orig_paintTo = content_widget.paintTo
-        local _bg           = _lf_bg
         function content_widget:paintTo(bb, x, y)
             -- Always paint from y=0 so the wallpaper is anchored at the top
             -- and covers the full screen area.
-            _bg:paintTo(bb, x, 0)
-            SUIWallpaper.paintTint(bb, x, 0, Screen:getWidth(), Screen:getHeight())
+            SUIWallpaper.paintBackground(bb, x)
             _orig_paintTo(self, bb, x, y)
         end
     end
@@ -2709,6 +2705,7 @@ function ScreenWidget:_updatePage(keep_cache, books_only, stats_only)
         logger.warn("simpleui: screen (" .. tostring(self._id) .. "): fatal DB error detected — dropping shared connection")
         pcall(function() self._db_conn:close() end)
         self._db_conn = nil
+        ctx.db_conn   = nil
     end
 
     if empty_widget then
@@ -2861,6 +2858,8 @@ function ScreenWidget:_scheduleDataRefresh(stats_only)
         Perf.mark("data refresh: db opened")
 
         if self._ctx_cache then
+            -- A deferred first paint built the ctx without a connection.
+            self._ctx_cache.db_conn = self._db_conn
             -- 1. Get new book metadata (prefetchBooks). Skipped when
             -- onShow() already resolved it for this open.
             if not pending_stats_only and not (books_fresh and self._cached_books_state) then
@@ -3352,8 +3351,9 @@ function ScreenWidget:_scheduleCoverPoll()
         for mod_id, slot in pairs(slots) do
             if type(slot.mod.updateCovers) == "function" then
                 local ok, all_done = pcall(slot.mod.updateCovers, slot.widget, ctx)
-                local dimen = slot.widget and slot.widget.dimen
                 if ok then
+                    local wrapper = self_ref._wrapper_pool and self_ref._wrapper_pool[mod_id]
+                    local dimen   = (wrapper and wrapper.dimen) or (slot.widget and slot.widget.dimen)
                     if dimen then
                         self_ref.dithered = true
                         UIManager:setDirty(self_ref, function()

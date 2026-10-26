@@ -1469,6 +1469,7 @@ function M.makeBackdropStrengthItem(opts)
     return M.makeSpinItem{
         text          = opts.title,
         enabled_func  = opts.enabled_func,
+        separator     = opts.separator,
         value_func    = opts.value_func or function() return label(opts.get()) end,
         live          = true,
         title         = opts.title,
