@@ -8138,6 +8138,50 @@ msgid_plural "days streak"
 msgstr[0] "sequência diária"
 msgstr[1] "dias de sequência"
 
+#: screens/sui_menu.lua:2573
+msgid "Adjust Row Automatically"
+msgstr "Ajustar a linha automaticamente"
+
+#: features/dialogs/sui_bento_sheet.lua:215
+msgid "Free widths"
+msgstr "Larguras livres"
+
+#: screens/sui_menu.lua:2600
+msgid "Interaction"
+msgstr "Interação"
+
+#: features/dialogs/sui_bento_sheet.lua:117
+msgid "Share of the row this module occupies.\n100% = full width. A module that does not fit in the row goes under one of the same width."
+msgstr "Parte da linha que este módulo ocupa.\n100% = largura total. Um módulo que não cabe na linha fica embaixo de um com a mesma largura."
+
+#: screens/sui_menu.lua:2562
+msgid "Stack Modules"
+msgstr "Empilhar módulos"
+
+#: screens/sui_menu.lua:2596
+msgid "Start & Wake"
+msgstr "Início e despertar"
+
+#: screens/sui_settings_window.lua:559
+msgid "To Page"
+msgstr "Para a página"
+
+#: screens/sui_menu.lua:2574
+msgid "When a module changes width, the next module of its row adjusts so the row stays full."
+msgstr "Quando um módulo muda de largura, o módulo seguinte da linha se ajusta para que a linha continue completa."
+
+#: screens/sui_menu.lua:2563
+msgid "When a module does not fit in its row, show it under the module of the row with the same width instead of starting a new row."
+msgstr "Quando um módulo não cabe na sua linha, mostra-o embaixo do módulo da linha com a mesma largura, em vez de iniciar uma nova linha."
+
+#: features/dialogs/sui_bento_sheet.lua:202
+msgid "Module Width"
+msgstr "Largura do módulo"
+
+#: engines/sui_screen_engine.lua:2103
+msgid "Page Editor"
+msgstr "Editor de páginas"
+
 #~ msgid "ALL TIME"
 #~ msgstr "TOTAL"
 
