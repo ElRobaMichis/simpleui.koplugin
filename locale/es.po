@@ -197,7 +197,7 @@ msgstr ""
 msgid ""
 "0% transparent, 100% solid. Values in between add a scrim over the wallpaper."
 msgstr ""
-"0% transparente, 100% sólido. Los valores intermedios añaden un velo sobre "
+"0% transparente, 100% sólido. Los valores intermedios agregan un velo sobre "
 "el fondo de pantalla."
 
 #: infra/sui_config.lua:1752
@@ -473,79 +473,79 @@ msgstr "Actividad"
 
 #: screens/sui_quicksettings_bar.lua:1510
 msgid "Add Action"
-msgstr "Añadir acción"
+msgstr "Agregar acción"
 
 #: features/sui_manual_books.lua:105
 msgid "Add Book"
-msgstr "Añadir libro"
+msgstr "Agregar libro"
 
 #: screens/sui_menu.lua:1418 screens/sui_menu.lua:1456
 msgid "Add Button"
-msgstr "Añadir botón"
+msgstr "Agregar botón"
 
 #: engines/sui_screen_engine.lua:2056 engines/sui_window.lua:1167
 #: features/sui_arrange.lua:434 screens/sui_menu.lua:917
 #: screens/sui_menu.lua:954 screens/sui_menu.lua:1997 screens/sui_menu.lua:2027
 #: screens/sui_quicksettings_bar.lua:1426 screens/sui_settings_window.lua:879
 msgid "Add Item"
-msgstr "Añadir elemento"
+msgstr "Agregar elemento"
 
 #: features/sui_manual_books.lua:159
 msgid "Add Manual Books"
-msgstr "Añadir libros manuales"
+msgstr "Agregar libros manuales"
 
 #: features/sui_manual_books.lua:172
 msgid "Add Manual Count"
-msgstr "Añadir conteo manual"
+msgstr "Agregar conteo manual"
 
 #: screens/sui_settings_window.lua:876 screens/sui_settings_window.lua:1004
 msgid "Add Module"
-msgstr "Añadir módulo"
+msgstr "Agregar módulo"
 
 #: screens/sui_settings_window.lua:973
 msgid "Add Page"
-msgstr "Añadir página"
+msgstr "Agregar página"
 
 #: features/sui_manual_books.lua:167
 msgid "Add Single Book"
-msgstr "Añadir un libro"
+msgstr "Agregar un libro"
 
 #: modules/module_tab_grid.lua:869
 msgid "Add Tab"
-msgstr "Añadir pestaña"
+msgstr "Agregar pestaña"
 
 #: modules/module_action_list.lua:298 modules/module_quick_actions.lua:349
 #: screens/sui_menu.lua:1917 screens/sui_quicksettings_bar.lua:1509
 msgid "Add at least 2 actions to arrange."
-msgstr "Añade al menos 2 acciones para organizar."
+msgstr "Agrega al menos 2 acciones para organizar."
 
 #: features/sui_collection_arrange.lua:35
 msgid "Add at least 2 books to arrange."
-msgstr "Añade al menos 2 libros para organizar."
+msgstr "Agrega al menos 2 libros para organizar."
 
 #: modules/critter/module_critter.lua:748
 msgid "Add at least 2 decorations to arrange."
-msgstr "Añade al menos 2 decoraciones para organizar."
+msgstr "Agrega al menos 2 decoraciones para organizar."
 
 #: modules/reading_stats/module_reading_stats.lua:1626
 msgid "Add at least 2 stats to arrange."
-msgstr "Añade al menos 2 estadísticas para organizar."
+msgstr "Agrega al menos 2 estadísticas para organizar."
 
 #: modules/module_tab_grid.lua:868 screens/sui_menu.lua:364
 msgid "Add at least 2 tabs to arrange."
-msgstr "Añade al menos 2 pestañas para organizar."
+msgstr "Agrega al menos 2 pestañas para organizar."
 
 #: modules/module_tbr.lua:342
 msgid "Add to To Be Read"
-msgstr "Añadir a pendientes"
+msgstr "Agregar a pendientes"
 
 #: modules/critter/module_critter.lua:729
 msgid "Add your own critters in %1"
-msgstr "Añade tus propias mascotas en %1"
+msgstr "Agrega tus propias mascotas en %1"
 
 #: modules/critter/module_critter.lua:905
 msgid "Add your own decorations in %1"
-msgstr "Añade tus propias decoraciones en %1"
+msgstr "Agrega tus propias decoraciones en %1"
 
 #: features/dialogs/sui_bento_sheet.lua:188
 msgid "Adjust row automatically"
@@ -571,11 +571,11 @@ msgstr "Mayúsculas"
 
 #: engines/sui_window.lua:4537 screens/sui_settings_window.lua:636
 msgid "All items have already been added."
-msgstr "Todos los elementos ya se han añadido."
+msgstr "Todos los elementos ya se han agregado."
 
 #: screens/sui_settings_window.lua:614
 msgid "All modules have already been added."
-msgstr "Todos los módulos ya se han añadido."
+msgstr "Todos los módulos ya se han agregado."
 
 #: features/sui_quickactions.lua:3312
 msgid "All recent books are finished."
@@ -2088,7 +2088,7 @@ msgstr "¡Fluye la energía! ¡Renazco!"
 
 #: features/sui_accent_picker.lua:54
 msgid "Enter a color like #2F6FDB."
-msgstr "Introduce un color como #2F6FDB."
+msgstr "Ingresa un color como #2F6FDB."
 
 #: features/sui_quickactions.lua:2096
 msgid ""
@@ -2097,10 +2097,10 @@ msgid ""
 "  /koreader/fonts/nerdfonts/symbols.ttf\n"
 "Leave blank and press OK to remove a Nerd Font icon."
 msgstr ""
-"Introduce el punto de código Unicode (hex) de un símbolo Nerd Fonts.\n"
+"Ingresa el punto de código Unicode (hex) de un símbolo Nerd Fonts.\n"
 "Puedes buscar códigos en wakamaifondue.com usando el archivo:\n"
 "  /koreader/fonts/nerdfonts/symbols.ttf\n"
-"Deja en blanco y pulsa OK para quitar el icono."
+"Deja en blanco y toca OK para quitar el icono."
 
 #: screens/sui_menu.lua:3593
 msgid "Error applying pack:"
@@ -2319,7 +2319,7 @@ msgstr "Explorador de archivos"
 
 #: features/sui_quickactions.lua:839
 msgid "File Manager not available."
-msgstr "Gestor de archivos no disponible."
+msgstr "Administrador de archivos no disponible."
 
 #: features/sui_quickactions.lua:2202
 msgid "File Search"
@@ -2775,7 +2775,7 @@ msgid ""
 msgstr ""
 "Altura del espaciador.\n"
 "100% es el tamaño por defecto.\n"
-"Toca las flechas para pasos finos; mantenlas pulsadas para pasos mayores."
+"Toca las flechas para pasos finos; mantenlas presionadas para pasos mayores."
 
 #: screens/sui_menu.lua:966
 msgid ""
@@ -3165,7 +3165,7 @@ msgid ""
 "If you selected the Momentum Preset, long press the Reading Goal module to "
 "choose and set your reading goals."
 msgstr ""
-"Si seleccionaste el ajuste Momentum, mantén pulsado el módulo Objetivo de "
+"Si seleccionaste el ajuste Momentum, mantén presionado el módulo Objetivo de "
 "lectura para elegir y establecer tus objetivos de lectura."
 
 #: features/sui_backup.lua:1148
@@ -3246,7 +3246,7 @@ msgstr "Datos inválidos"
 
 #: features/sui_quickactions.lua:2042
 msgid "Invalid input. Please enter 1–6 hexadecimal digits (0–9, A–F)."
-msgstr "Entrada inválida. Introduce 1-6 dígitos hexadecimales (0-9, A-F)."
+msgstr "Entrada inválida. Ingresa 1-6 dígitos hexadecimales (0-9, A-F)."
 
 #: features/sui_presets.lua:558 features/sui_presets.lua:741
 msgid "Invalid preset file"
@@ -3583,11 +3583,11 @@ msgstr "Bloquear escala"
 
 #: infra/sui_config.lua:1903
 msgid "Long Press"
-msgstr "Pulsación larga"
+msgstr "Mantener presionado"
 
 #: screens/sui_onboarding.lua:321
 msgid "Long press to customize"
-msgstr "Mantén pulsado para personalizar"
+msgstr "Mantén presionado para personalizar"
 
 #: modules/reading_stats/module_reading_stats.lua:461
 msgid "Longest session"
@@ -3659,7 +3659,7 @@ msgstr ""
 #: features/sui_presets.lua:1002 screens/sui_menu.lua:3763
 #: screens/sui_menu.lua:3814 screens/sui_menu.lua:3819
 msgid "Manage presets"
-msgstr "Gestionar ajustes"
+msgstr "Administrar ajustes"
 
 #: features/sui_manual_books.lua:145 screens/sui_stats_windows.lua:768
 msgid "Manual Yearly Count"
@@ -3969,7 +3969,7 @@ msgstr "Símbolo Nerd Font…"
 
 #: features/sui_quickactions.lua:278
 msgid "Network manager unavailable."
-msgstr "Gestor de red no disponible."
+msgstr "Administrador de red no disponible."
 
 #: screens/sui_menu.lua:2488
 msgid "Never"
@@ -4085,7 +4085,7 @@ msgstr "Sin acciones configuradas"
 #: modules/module_action_list.lua:84 modules/module_action_list.lua:103
 #: modules/module_quick_actions.lua:144
 msgid "No actions configured  —  long press to configure"
-msgstr "Sin acciones configuradas — mantén pulsado para configurar"
+msgstr "Sin acciones configuradas — mantén presionado para configurar"
 
 #: screens/sui_quicksettings_bar.lua:759
 msgid ""
@@ -4155,7 +4155,7 @@ msgstr "Sin colección seleccionada"
 
 #: modules/module_feat_coll.lua:144
 msgid "No collection selected  —  long press to configure"
-msgstr "Sin colección seleccionada — mantén pulsado para configurar"
+msgstr "Sin colección seleccionada — mantén presionado para configurar"
 
 #: modules/module_coverdeck.lua:1543
 msgid "No collections found"
@@ -4172,14 +4172,14 @@ msgstr "Sin colecciones seleccionadas"
 
 #: modules/module_collections.lua:522
 msgid "No collections selected  —  long press to configure"
-msgstr "Sin colecciones seleccionadas — mantén pulsado para configurar"
+msgstr "Sin colecciones seleccionadas — mantén presionado para configurar"
 
 #: modules/module_quote.lua:948
 msgid ""
 "No custom quotes found. Add a .lua file to the plugin's sui_quotes/ folder "
 "and select it in Settings."
 msgstr ""
-"No hay citas personalizadas. Añade un archivo .lua a la carpeta sui_quotes/ "
+"No hay citas personalizadas. Agrega un archivo .lua a la carpeta sui_quotes/ "
 "del plugin y selecciónalo en Ajustes."
 
 #: screens/sui_settings_window.lua:315
@@ -4329,7 +4329,7 @@ msgstr "Sin estadísticas seleccionadas"
 
 #: modules/reading_stats/module_reading_stats.lua:1346
 msgid "No stats selected  —  long press to configure"
-msgstr "Sin estadísticas seleccionadas — mantén pulsado para configurar"
+msgstr "Sin estadísticas seleccionadas — mantén presionado para configurar"
 
 #: features/sui_quickactions.lua:2500
 msgid "No system actions found."
@@ -4341,7 +4341,7 @@ msgstr "Sin pestañas"
 
 #: modules/module_tab_grid.lua:1037
 msgid "No tabs  —  long press to configure"
-msgstr "Sin pestañas — mantén pulsado para configurar"
+msgstr "Sin pestañas — mantén presionado para configurar"
 
 #: modules/module_tab_grid.lua:867
 msgid "No tabs."
@@ -4853,23 +4853,23 @@ msgstr ""
 
 #: screens/sui_stats_windows.lua:511
 msgid "Please enter a date in YYYY-MM-DD format."
-msgstr "Introduce una fecha en formato AAAA-MM-DD."
+msgstr "Ingresa una fecha en formato AAAA-MM-DD."
 
 #: features/sui_presets.lua:347
 msgid "Please enter a name for the preset."
-msgstr "Introduce un nombre para el ajuste."
+msgstr "Ingresa un nombre para el ajuste."
 
 #: features/sui_manual_books.lua:56
 msgid "Please enter a start or finish date."
-msgstr "Introduce una fecha de inicio o de fin."
+msgstr "Ingresa una fecha de inicio o de fin."
 
 #: features/sui_manual_books.lua:50
 msgid "Please enter a title."
-msgstr "Introduce un título."
+msgstr "Ingresa un título."
 
 #: features/sui_manual_books.lua:53
 msgid "Please enter dates as YYYY-MM-DD or YYYY."
-msgstr "Introduce las fechas como AAAA-MM-DD o AAAA."
+msgstr "Ingresa las fechas como AAAA-MM-DD o AAAA."
 
 #: infra/sui_compat_check.lua:122
 msgid "Please restart KOReader for the change to take effect."
@@ -4975,7 +4975,7 @@ msgid ""
 "Press and hold any element on the screen (like modules or bars) to quickly "
 "customize its settings."
 msgstr ""
-"Mantén pulsado cualquier elemento de la pantalla (como módulos o barras) "
+"Mantén presionado cualquier elemento de la pantalla (como módulos o barras) "
 "para personalizar rápidamente sus ajustes."
 
 #: modules/critter/dialog.lua:336
@@ -5810,7 +5810,7 @@ msgstr "Ajustes no encontrados."
 #: screens/sui_menu.lua:1177 screens/sui_menu.lua:2570
 #: screens/sui_quicksettings_bar.lua:1685
 msgid "Settings on Long Tap"
-msgstr "Ajustes al mantener pulsado"
+msgstr "Ajustes al mantener presionado"
 
 #: modules/critter/phrases.lua:127
 msgid "Settle in with a good book."
@@ -6505,7 +6505,7 @@ msgstr "¿Tomando un descanso?"
 
 #: screens/sui_settings_window.lua:316
 msgid "Tap \"Create Screen\" below to add one."
-msgstr "Toca «Crear pantalla» abajo para añadir una."
+msgstr "Toca «Crear pantalla» abajo para agregar una."
 
 #: modules/critter/dialog.lua:228
 msgid "Tea, a blanket and nothing bad happening."
@@ -6773,7 +6773,7 @@ msgid ""
 "This book is marked as Finished, so it can't be added to To Be Read.\n"
 "Change its status to Reading or On Hold first."
 msgstr ""
-"Este libro está marcado como Terminado, por lo que no se puede añadir a "
+"Este libro está marcado como Terminado, por lo que no se puede agregar a "
 "Pendientes.\n"
 "Cambia primero su estado a Leyendo o En espera."
 
@@ -6783,7 +6783,7 @@ msgid ""
 "Add actions to it from Settings → Quick Actions."
 msgstr ""
 "Este grupo está vacío.\n"
-"Añádele acciones desde Ajustes → Acciones rápidas."
+"Agrégale acciones desde Ajustes → Acciones rápidas."
 
 #: modules/reading_stats/module_reading_stats.lua:450
 #: modules/reading_stats/module_reading_stats.lua:451
@@ -7278,39 +7278,39 @@ msgid ""
 "menu.\n"
 "Disable this to prevent settings from appearing on long tap."
 msgstr ""
-"Al activarlo, la pulsación larga en un módulo de la pantalla de inicio abre "
-"su menú de ajustes.\n"
+"Al activarlo, mantener presionado un módulo de la pantalla de inicio abre su "
+"menú de ajustes.\n"
 "Desactiva esta opción para evitar que aparezcan los ajustes al mantener "
-"pulsado."
+"presionado."
 
 #: screens/sui_quicksettings_bar.lua:1688
 msgid ""
 "When enabled, long-pressing the Quick Settings Bar opens its settings menu.\n"
 "Disable this to prevent the settings menu from appearing on long tap."
 msgstr ""
-"Al activarlo, la pulsación larga en la barra de ajustes rápidos abre su menú "
+"Al activarlo, mantener presionada la barra de ajustes rápidos abre su menú "
 "de ajustes.\n"
 "Desactiva esta opción para evitar que aparezca el menú de ajustes al "
-"mantener pulsado."
+"mantener presionado."
 
 #: screens/sui_menu.lua:1178
 msgid ""
 "When enabled, long-pressing the navigation bar opens its settings menu.\n"
 "Disable this to prevent the settings menu from appearing on long tap."
 msgstr ""
-"Al activarlo, la pulsación larga en la barra de navegación abre su menú de "
+"Al activarlo, mantener presionada la barra de navegación abre su menú de "
 "ajustes.\n"
 "Desactiva esta opción para evitar que aparezca el menú de ajustes al "
-"mantener pulsado."
+"mantener presionado."
 
 #: screens/sui_menu.lua:1009
 msgid ""
 "When enabled, long-pressing the top bar opens its settings menu.\n"
 "Disable this to prevent the settings menu from appearing on long tap."
 msgstr ""
-"Al activarlo, la pulsación larga en la barra superior abre sus ajustes.\n"
+"Al activarlo, mantener presionada la barra superior abre sus ajustes.\n"
 "Desactiva esta opción para evitar que aparezca el menú de ajustes al "
-"mantener pulsado."
+"mantener presionado."
 
 #: screens/sui_menu.lua:2373
 msgid ""
@@ -7577,7 +7577,7 @@ msgstr "libros terminados"
 
 #: modules/reading_stats/module_reading_stats.lua:448
 msgid "daily avg (7 days)"
-msgstr "media diaria (7 días)"
+msgstr "promedio diario (7 días)"
 
 #: modules/reading_stats/module_reading_stats.lua:483
 msgid "days read (12 weeks)"
